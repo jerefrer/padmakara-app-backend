@@ -1,0 +1,536 @@
+{% extends "admin/base_site.html" %}
+{% load static i18n %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block bodyclass %}{{ block.super }} app-{{ opts.app_label }} model-{{ opts.model_name }} bulk-upload{% endblock %}
+
+{% if not is_popup %}
+    {% block breadcrumbs %}
+        <div class="px-4">
+            <div class="container mb-6 mx-auto -my-3 lg:mb-12">
+                <ul class="flex flex-wrap">
+                    {% url 'admin:index' as link %}
+                    {% trans 'Home' as name %}
+                    {% include 'unfold/helpers/breadcrumb_item.html' with link=link name=name %}
+
+                    {% url 'admin:app_list' app_label=opts.app_label as link %}
+                    {% include 'unfold/helpers/breadcrumb_item.html' with link=link name=opts.app_config.verbose_name %}
+                    
+                    {% url 'admin:retreats_retreat_changelist' as link %}
+                    {% trans 'Retreats' as name %}
+                    {% include 'unfold/helpers/breadcrumb_item.html' with link=link name=name %}
+                    
+                    {% url 'admin:retreats_retreat_change' session.retreat.id as link %}
+                    {% include 'unfold/helpers/breadcrumb_item.html' with link=link name=session.retreat.name %}
+                    
+                    {% url 'admin:retreats_session_change' session.id as link %}
+                    {% include 'unfold/helpers/breadcrumb_item.html' with link=link name=session.title %}
+                    
+                    {% include 'unfold/helpers/breadcrumb_item.html' with name="Bulk Upload Files" %}
+                </ul>
+            </div>
+        </div>
+    {% endblock %}
+{% endif %}
+
+{% block extrahead %}{{ block.super }}
+<style>
+/* Minimal custom styles for drag and drop functionality */
+.upload-zone.dragover {
+    transform: scale(1.02);
+    border-color: rgb(37 99 235) !important;
+    background-color: rgb(239 246 255) !important;
+}
+
+.upload-item.success {
+    border-color: rgb(34 197 94);
+    background: linear-gradient(135deg, rgb(240 253 244) 0%, rgb(220 252 231) 100%);
+}
+
+.upload-item.error {
+    border-color: rgb(239 68 68);
+    background: linear-gradient(135deg, rgb(254 242 242) 0%, rgb(254 226 226) 100%);
+}
+</style>
+{% endblock %}
+
+{% block nav-global-side %}
+    {% block object-tools %}
+        <div class="object-tools">
+            {% block object-tools-items %}
+                <a href="{% url 'admin:retreats_session_change' session.id %}" class="object-tools-item">
+                    ← Back to Session
+                </a>
+                <a href="{% url 'admin:retreats_track_add' %}?session={{ session.id }}" class="object-tools-item addlink">
+                    Add Single Track
+                </a>
+            {% endblock %}
+        </div>
+    {% endblock %}
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="container mx-auto px-4 pb-8">
+        <!-- Session Info Header -->
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+            <div class="flex justify-between items-start">
+                <div>
+                    <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-3 flex items-center">
+                        📂 {{ session.title }}
+                    </h2>
+                    <div class="text-sm text-gray-600 dark:text-gray-400 space-y-1">
+                        <div><span class="font-medium">Retreat:</span> {{ session.retreat.name }}</div>
+                        <div><span class="font-medium">Date:</span> {{ session.session_date }} • {{ session.get_time_period_display }}</div>
+                        <div><span class="font-medium">Session:</span> {{ session.session_number }} of {{ session.retreat.sessions.count }}</div>
+                    </div>
+                </div>
+                <div>
+                    {% if existing_tracks %}
+                    <span class="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-100">
+                        {{ existing_tracks.count }} existing track{{ existing_tracks.count|pluralize }}
+                    </span>
+                    {% else %}
+                    <span class="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-800 dark:text-yellow-100">
+                        No tracks yet
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <!-- Existing Tracks -->
+        {% if existing_tracks %}
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                📁 Existing Tracks ({{ existing_tracks.count }})
+            </h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for track in existing_tracks %}
+                <div class="bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 p-4 hover:shadow-md transition-shadow">
+                    <div class="flex justify-between items-start mb-2">
+                        <div class="flex-1">
+                            <div class="font-medium text-gray-900 dark:text-gray-100 mb-1 flex items-center">
+                                <span class="inline-flex items-center justify-center w-6 h-6 bg-primary-600 text-white text-xs font-bold rounded-full mr-2">
+                                    {{ track.track_number }}
+                                </span>
+                                {{ track.title|truncatechars:25 }}
+                            </div>
+                            <div class="text-sm text-gray-500 dark:text-gray-400">
+                                {{ track.file_size_mb|default:"—" }} MB
+                                {% if track.audio_file %}
+                                • <a href="{{ track.audio_file.url }}" target="_blank" class="text-primary-600 hover:text-primary-700">View File</a>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <a href="{% url 'admin:retreats_track_change' track.id %}" 
+                           class="inline-flex items-center px-3 py-1.5 bg-primary-600 text-white text-xs font-medium rounded hover:bg-primary-700 transition-colors">
+                            Edit
+                        </a>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Upload Zone -->
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                🎵 Upload Audio Files
+            </h3>
+            
+            <div id="upload-zone" class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-12 text-center bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-600/50 transition-all cursor-pointer mb-4">
+                <div class="text-4xl mb-3 opacity-60">🎵</div>
+                <div class="text-base font-medium text-gray-700 dark:text-gray-300 mb-1">Drag and drop MP3 files here</div>
+                <div class="text-sm text-gray-500 dark:text-gray-400">or click to select files</div>
+                <input type="file" id="file-input" multiple accept="audio/mp3,audio/mpeg,audio/wav" class="hidden">
+            </div>
+            
+            <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
+                <div class="font-medium text-gray-900 dark:text-gray-100 mb-2 flex items-center">
+                    📋 File Naming:
+                </div>
+                <div class="text-sm text-gray-700 dark:text-gray-300 mb-2">Use descriptive filenames like:</div>
+                <code class="block bg-white dark:bg-gray-800 p-3 rounded border text-sm font-mono">
+                    "001 JKR How to relate to our mind-(12 April AM_part_1).mp3"
+                </code>
+                <div class="text-xs text-gray-600 dark:text-gray-400 mt-2">
+                    Track numbers and titles will be automatically extracted from filenames.
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress Container -->
+        <div id="progress-container" class="hidden bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                🔄 Upload Progress
+            </h3>
+            <div id="upload-list" class="space-y-3"></div>
+        </div>
+
+        <!-- Results -->
+        <div id="results-container" class="hidden bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 mb-6">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center">
+                ✅ Upload Complete
+            </h3>
+            <div id="results-list" class="mb-6"></div>
+            <div class="pt-4 border-t border-gray-200 dark:border-gray-600 flex flex-wrap gap-3">
+                <a href="{% url 'admin:retreats_session_change' session.id %}" 
+                   class="inline-flex items-center px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition-colors">
+                    🎵 View Session with New Tracks
+                </a>
+                <a href="{% url 'admin:retreats_retreat_change' session.retreat.id %}" 
+                   class="inline-flex items-center px-4 py-2 bg-primary-600 text-white text-sm font-medium rounded-lg hover:bg-primary-700 transition-colors">
+                    🏔️ Back to Retreat
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const uploadZone = document.getElementById('upload-zone');
+    const fileInput = document.getElementById('file-input');
+    const progressContainer = document.getElementById('progress-container');
+    const uploadList = document.getElementById('upload-list');
+    const resultsContainer = document.getElementById('results-container');
+    const resultsList = document.getElementById('results-list');
+
+    let uploadQueue = [];
+    let currentUploads = 0;
+    const maxConcurrentUploads = 1;  // Reduced to 1 to prevent database locking
+
+    // Drag and drop handlers
+    uploadZone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadZone.classList.add('dragover');
+    });
+
+    uploadZone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+    });
+
+    uploadZone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadZone.classList.remove('dragover');
+        const files = Array.from(e.dataTransfer.files);
+        handleFiles(files);
+    });
+
+    // Click to select files
+    uploadZone.addEventListener('click', function() {
+        fileInput.click();
+    });
+
+    fileInput.addEventListener('change', function() {
+        const files = Array.from(this.files);
+        handleFiles(files);
+    });
+
+    function handleFiles(files) {
+        // Filter for audio files
+        const audioFiles = files.filter(file => 
+            file.type.startsWith('audio/') || file.name.toLowerCase().endsWith('.mp3')
+        );
+
+        if (audioFiles.length === 0) {
+            alert('Please select MP3 or other audio files.');
+            return;
+        }
+
+        if (audioFiles.length !== files.length) {
+            alert(`Only ${audioFiles.length} of ${files.length} files are valid audio files.`);
+        }
+
+        // Add to upload queue
+        uploadQueue = audioFiles.map(file => ({
+            file: file,
+            status: 'pending',
+            progress: 0,
+            trackInfo: null,
+            error: null
+        }));
+
+        showProgressContainer();
+        startUploads();
+    }
+
+    function showProgressContainer() {
+        progressContainer.classList.remove('hidden');
+        uploadList.innerHTML = '';
+
+        uploadQueue.forEach((item, index) => {
+            const uploadItem = document.createElement('div');
+            uploadItem.className = 'bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600 p-4 transition-all';
+            uploadItem.id = `upload-${index}`;
+            
+            uploadItem.innerHTML = `
+                <div class="flex justify-between items-center mb-2">
+                    <span class="font-medium text-gray-900 dark:text-gray-100">${item.file.name}</span>
+                    <span class="text-sm text-gray-600 dark:text-gray-400">${(item.file.size / 1024 / 1024).toFixed(2)} MB</span>
+                </div>
+                <div class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2 mb-2">
+                    <div class="bg-primary-600 h-2 rounded-full transition-all duration-300" id="progress-${index}" style="width: 0%"></div>
+                </div>
+                <div id="status-${index}" class="text-sm text-gray-600 dark:text-gray-400">Waiting...</div>
+            `;
+            
+            uploadList.appendChild(uploadItem);
+        });
+    }
+
+    function startUploads() {
+        for (let i = 0; i < Math.min(maxConcurrentUploads, uploadQueue.length); i++) {
+            uploadNext();
+        }
+    }
+
+    function uploadNext() {
+        if (currentUploads >= maxConcurrentUploads) return;
+
+        const nextIndex = uploadQueue.findIndex(item => item.status === 'pending');
+        if (nextIndex === -1) {
+            // All uploads complete
+            if (currentUploads === 0) {
+                showResults();
+            }
+            return;
+        }
+
+        uploadFile(nextIndex);
+    }
+
+    function uploadFile(index) {
+        const item = uploadQueue[index];
+        const uploadItem = document.getElementById(`upload-${index}`);
+        const progressBar = document.getElementById(`progress-${index}`);
+        const status = document.getElementById(`status-${index}`);
+
+        item.status = 'uploading';
+        currentUploads++;
+        status.textContent = 'Getting upload URL...';
+
+        // Step 1: Get presigned URL from Django
+        fetch(`{% url 'retreats:generate_s3_presigned_url' session.id %}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({
+                filename: item.file.name,
+                file_size: item.file.size
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                throw new Error(data.error);
+            }
+
+            // Step 2: Upload directly to S3 with real progress
+            uploadToS3(index, data);
+        })
+        .catch(error => {
+            currentUploads--;
+            handleUploadError(index, error.message);
+            uploadNext();
+        });
+    }
+
+    function uploadToS3(index, uploadData) {
+        const item = uploadQueue[index];
+        const uploadItem = document.getElementById(`upload-${index}`);
+        const progressBar = document.getElementById(`progress-${index}`);
+        const status = document.getElementById(`status-${index}`);
+
+        const formData = new FormData();
+        
+        // Add S3 form fields from presigned POST
+        Object.keys(uploadData.presigned_post.fields).forEach(key => {
+            formData.append(key, uploadData.presigned_post.fields[key]);
+        });
+        
+        // Add the file last (S3 requirement)
+        formData.append('file', item.file);
+
+        const xhr = new XMLHttpRequest();
+
+        // Real S3 upload progress tracking
+        xhr.upload.addEventListener('progress', function(e) {
+            if (e.lengthComputable) {
+                // This is REAL progress to S3!
+                const realProgress = (e.loaded / e.total) * 100;
+                item.progress = realProgress;
+                progressBar.style.width = realProgress + '%';
+                status.textContent = `Uploading to S3... ${Math.round(realProgress)}%`;
+            }
+        });
+
+        xhr.addEventListener('load', function() {
+            currentUploads--;
+            
+            console.log(`S3 Upload Response - Status: ${xhr.status}, StatusText: ${xhr.statusText}`);
+            console.log(`S3 Response Headers:`, xhr.getAllResponseHeaders());
+            console.log(`S3 Response Body:`, xhr.responseText);
+            
+            if (xhr.status === 204) { // S3 returns 204 for successful uploads
+                // Step 3: Notify Django that upload is complete
+                completeUpload(index, uploadData);
+            } else {
+                let errorMessage = 'S3 upload failed';
+                try {
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(xhr.responseText, "text/xml");
+                    const errorElement = xmlDoc.getElementsByTagName("Message")[0];
+                    if (errorElement) {
+                        errorMessage = `S3 Error: ${errorElement.textContent}`;
+                    } else {
+                        errorMessage = `S3 upload failed: HTTP ${xhr.status} - ${xhr.statusText}`;
+                    }
+                } catch (e) {
+                    errorMessage = `S3 upload failed: HTTP ${xhr.status} - ${xhr.statusText}`;
+                }
+                console.error('S3 Upload Error:', errorMessage);
+                handleUploadError(index, errorMessage);
+                uploadNext();
+            }
+        });
+
+        xhr.addEventListener('error', function(e) {
+            currentUploads--;
+            console.error('Network error during S3 upload:', e);
+            console.error('XHR Error Details:', {
+                readyState: xhr.readyState,
+                status: xhr.status,
+                statusText: xhr.statusText,
+                responseText: xhr.responseText
+            });
+            handleUploadError(index, `Network error during S3 upload: ${xhr.statusText || 'Unknown error'}`);
+            uploadNext();
+        });
+
+        status.textContent = 'Uploading to S3...';
+        xhr.open('POST', uploadData.presigned_post.url);
+        xhr.send(formData);
+    }
+
+    function completeUpload(index, uploadData) {
+        const item = uploadQueue[index];
+        const uploadItem = document.getElementById(`upload-${index}`);
+        const progressBar = document.getElementById(`progress-${index}`);
+        const status = document.getElementById(`status-${index}`);
+
+        progressBar.style.width = '100%';
+        status.textContent = 'Creating track record...';
+
+        // Notify Django to create the Track record
+        fetch(`{% url 'retreats:complete_s3_upload' session.id %}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({
+                s3_key: uploadData.s3_key,
+                upload_id: uploadData.upload_id,
+                track_info: uploadData.track_info,
+                file_size: item.file.size
+            })
+        })
+        .then(response => response.json())
+        .then(response => {
+            if (response.success) {
+                item.status = 'success';
+                item.trackInfo = response.track;
+                uploadItem.classList.add('success');
+                
+                status.innerHTML = `
+                    <div class="track-info">
+                        ✅ Track ${response.track.track_number}: ${response.track.title}<br>
+                        <small style="color: #666;">
+                            ${response.track.file_size_mb} MB • Direct S3 upload
+                            ${response.track.s3_url ? ' • <a href="' + response.track.s3_url + '" target="_blank">View in S3</a>' : ''}
+                        </small>
+                    </div>
+                `;
+            } else {
+                throw new Error(response.error || 'Failed to create track record');
+            }
+            
+            uploadNext();
+        })
+        .catch(error => {
+            handleUploadError(index, `Track creation failed: ${error.message}`);
+            uploadNext();
+        });
+    }
+
+    function handleUploadError(index, errorMessage) {
+        const item = uploadQueue[index];
+        const uploadItem = document.getElementById(`upload-${index}`);
+        const status = document.getElementById(`status-${index}`);
+
+        item.status = 'error';
+        item.error = errorMessage;
+        uploadItem.classList.add('error');
+        status.innerHTML = `<div class="error-message">❌ ${errorMessage}</div>`;
+    }
+
+    function showResults() {
+        resultsContainer.classList.remove('hidden');
+        
+        const successfulUploads = uploadQueue.filter(item => item.status === 'success');
+        const failedUploads = uploadQueue.filter(item => item.status === 'error');
+
+        let resultsHTML = '';
+        
+        if (successfulUploads.length > 0) {
+            resultsHTML += `<div class="mb-4">
+                <div class="font-semibold text-green-600 mb-2">✅ Successfully uploaded ${successfulUploads.length} track(s):</div>
+                <ul class="ml-5 space-y-1 text-sm text-gray-700 dark:text-gray-300">`;
+            
+            successfulUploads.forEach(item => {
+                resultsHTML += `<li>Track ${item.trackInfo.track_number}: ${item.trackInfo.title}</li>`;
+            });
+            
+            resultsHTML += '</ul></div>';
+        }
+
+        if (failedUploads.length > 0) {
+            resultsHTML += `<div class="mb-4">
+                <div class="font-semibold text-red-600 mb-2">❌ Failed uploads (${failedUploads.length}):</div>
+                <ul class="ml-5 space-y-1 text-sm text-red-600">`;
+            
+            failedUploads.forEach(item => {
+                resultsHTML += `<li>${item.file.name}: ${item.error}</li>`;
+            });
+            
+            resultsHTML += '</ul></div>';
+        }
+
+        resultsList.innerHTML = resultsHTML;
+    }
+
+    // Helper function to get CSRF cookie
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+});
+</script>
+{% endblock content %}

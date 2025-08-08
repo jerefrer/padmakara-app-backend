@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "WebFetch(domain:docs.django-unfold.dev)",
+      "WebFetch(domain:unfoldadmin.com)",
+      "Bash(python:*)"
+    ],
+    "deny": []
+  }
+}

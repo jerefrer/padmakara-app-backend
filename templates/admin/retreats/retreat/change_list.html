@@ -1,0 +1,258 @@
+{% extends "admin/change_list.html" %}
+{% load static %}
+
+{% block extrahead %}{{ block.super }}
+<style>
+/* Enhanced Retreat List */
+.retreat-quick-actions {
+    background: white;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.create-retreat-banner {
+    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+    color: white;
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    margin-bottom: 24px;
+}
+
+.create-retreat-banner h2 {
+    margin: 0 0 8px 0;
+    font-size: 24px;
+}
+
+.create-retreat-banner p {
+    margin: 0 0 16px 0;
+    opacity: 0.9;
+}
+
+.create-button {
+    background: white;
+    color: #28a745 !important;
+    padding: 12px 32px;
+    font-size: 18px;
+    font-weight: 600;
+    border: none;
+    border-radius: 8px;
+    text-decoration: none !important;
+    display: inline-block;
+    transition: all 0.3s ease;
+}
+
+.create-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* Enhanced table styling */
+.result_list tr {
+    transition: background-color 0.3s ease;
+}
+
+.result_list tr:hover {
+    background-color: #f0f8ff;
+}
+
+/* Action buttons in table */
+.retreat-actions {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.mini-btn {
+    background: #007cba;
+    color: white !important;
+    padding: 4px 8px;
+    font-size: 11px;
+    border: none;
+    border-radius: 3px;
+    text-decoration: none !important;
+    white-space: nowrap;
+    transition: background 0.3s ease;
+}
+
+.mini-btn:hover {
+    background: #0056b3;
+}
+
+.mini-btn.upload {
+    background: #28a745;
+}
+
+.mini-btn.upload:hover {
+    background: #218838;
+}
+
+.mini-btn.session {
+    background: #ffc107;
+    color: #000 !important;
+}
+
+.mini-btn.session:hover {
+    background: #e0a800;
+}
+
+/* Status indicators */
+.status-indicator {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 4px;
+}
+
+.status-indicator.complete {
+    background: #d4edda;
+    color: #155724;
+}
+
+.status-indicator.partial {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.status-indicator.empty {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .retreat-actions {
+        flex-direction: column;
+    }
+    
+    .create-retreat-banner {
+        padding: 16px;
+    }
+    
+    .create-retreat-banner h2 {
+        font-size: 20px;
+    }
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="create-retreat-banner">
+    <h2>🏔️ Retreat Management</h2>
+    <p>Create and manage Buddhist retreats with sessions and audio content</p>
+    <a href="{% url 'admin:retreats_retreat_add' %}" class="create-button">
+        ➕ Create New Retreat
+    </a>
+</div>
+
+<div class="retreat-quick-actions">
+    <h3>📊 Quick Stats</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; margin-top: 16px;">
+        <div style="text-align: center; padding: 16px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 24px; font-weight: 600; color: #007cba;">{{ cl.result_count }}</div>
+            <div style="font-size: 14px; color: #666;">Total Retreats</div>
+        </div>
+        <div style="text-align: center; padding: 16px; background: #f8f9fa; border-radius: 8px;">
+            <div style="font-size: 24px; font-weight: 600; color: #28a745;">{{ cl.result_list|length }}</div>
+            <div style="font-size: 14px; color: #666;">On This Page</div>
+        </div>
+    </div>
+</div>
+
+{{ block.super }}
+{% endblock %}
+
+{% block result_list %}
+<div class="results">
+    <table id="result_list">
+        <thead>
+            <tr>
+                <th scope="col">Retreat</th>
+                <th scope="col">Dates</th>
+                <th scope="col">Status</th>
+                <th scope="col">Progress</th>
+                <th scope="col">Quick Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for retreat in cl.result_list %}
+            <tr>
+                <td>
+                    <a href="{% url 'admin:retreats_retreat_change' retreat.id %}" style="font-weight: 600; color: #007cba; text-decoration: none;">
+                        {{ retreat.name }}
+                    </a>
+                    <br>
+                    <small style="color: #666;">
+                        {% for group in retreat.groups.all %}
+                            {{ group.name }}{% if not forloop.last %}, {% endif %}
+                        {% endfor %}
+                    </small>
+                </td>
+                <td>
+                    {{ retreat.start_date }}
+                    {% if retreat.end_date and retreat.end_date != retreat.start_date %}
+                        <br>to {{ retreat.end_date }}
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="status-badge" style="background-color: 
+                        {% if retreat.status == 'completed' %}#28a745
+                        {% elif retreat.status == 'ongoing' %}#ffc107
+                        {% elif retreat.status == 'upcoming' %}#007cba
+                        {% else %}#6c757d{% endif %}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 12px;">
+                        {{ retreat.get_status_display }}
+                    </span>
+                </td>
+                <td>
+                    {% with sessions_count=retreat.sessions.count %}
+                    {% if sessions_count == 0 %}
+                        <span class="status-indicator empty">No Sessions</span>
+                    {% else %}
+                        {% with tracks_count=retreat.sessions.all.0.tracks.count %}
+                        <span class="status-indicator {% if tracks_count > 0 %}complete{% else %}partial{% endif %}">
+                            {{ sessions_count }} Session{{ sessions_count|pluralize }}
+                        </span>
+                        {% endwith %}
+                    {% endif %}
+                    {% endwith %}
+                </td>
+                <td>
+                    <div class="retreat-actions">
+                        <a href="{% url 'admin:retreats_retreat_change' retreat.id %}" class="mini-btn">
+                            👁️ View
+                        </a>
+                        {% if retreat.sessions.count == 0 %}
+                            <a href="{% url 'admin:retreats_session_add' %}?retreat={{ retreat.id }}" class="mini-btn session">
+                                ➕ Session
+                            </a>
+                        {% else %}
+                            {% with first_session=retreat.sessions.first %}
+                            <a href="{% url 'retreats:bulk_upload_tracks' first_session.id %}" class="mini-btn upload">
+                                📂 Upload
+                            </a>
+                            {% endwith %}
+                        {% endif %}
+                    </div>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="5" style="text-align: center; padding: 40px; color: #666;">
+                    <div style="font-size: 48px; margin-bottom: 16px;">🏔️</div>
+                    <div style="font-size: 18px; margin-bottom: 8px;">No retreats created yet</div>
+                    <div style="margin-bottom: 20px;">Start by creating your first retreat</div>
+                    <a href="{% url 'admin:retreats_retreat_add' %}" class="big-button" style="background: #28a745; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+                        Create First Retreat
+                    </a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

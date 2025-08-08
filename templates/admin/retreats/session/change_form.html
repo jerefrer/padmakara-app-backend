@@ -1,0 +1,316 @@
+{% extends "admin/change_form.html" %}
+{% load static %}
+
+{% block extrahead %}{{ block.super }}
+<style>
+/* Enhanced Session Management */
+.session-management {
+    background: white;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.session-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #e8f4f8;
+    padding-bottom: 12px;
+}
+
+.session-title {
+    color: #007cba;
+    margin: 0;
+    font-size: 20px;
+}
+
+.breadcrumb {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    padding: 8px 16px;
+    margin: 16px 0;
+    font-size: 14px;
+}
+
+.breadcrumb a {
+    color: #007cba;
+    text-decoration: none;
+}
+
+.breadcrumb a:hover {
+    text-decoration: underline;
+}
+
+.upload-section {
+    background: linear-gradient(135deg, #e8f5e8 0%, #f0f8ff 100%);
+    border: 2px dashed #28a745;
+    border-radius: 12px;
+    padding: 40px 20px;
+    text-align: center;
+    margin: 20px 0;
+    transition: all 0.3s ease;
+}
+
+.upload-section:hover {
+    border-color: #20c997;
+    background: linear-gradient(135deg, #f0f8f0 0%, #f8fffe 100%);
+}
+
+.upload-icon {
+    font-size: 48px;
+    margin-bottom: 16px;
+}
+
+.upload-title {
+    font-size: 24px;
+    font-weight: 600;
+    color: #28a745;
+    margin-bottom: 8px;
+}
+
+.upload-description {
+    color: #666;
+    margin-bottom: 20px;
+    font-size: 16px;
+}
+
+.tracks-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+    margin-top: 20px;
+}
+
+.track-card {
+    background: white;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 16px;
+    transition: all 0.3s ease;
+}
+
+.track-card:hover {
+    border-color: #007cba;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.track-header {
+    display: flex;
+    justify-content: between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.track-number {
+    background: #007cba;
+    color: white;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 8px;
+}
+
+.track-title {
+    font-weight: 600;
+    color: #333;
+    flex-grow: 1;
+}
+
+.track-meta {
+    font-size: 14px;
+    color: #666;
+    margin-bottom: 12px;
+}
+
+.track-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.track-btn {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    color: #495057;
+    padding: 4px 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    text-decoration: none;
+    transition: all 0.3s ease;
+}
+
+.track-btn:hover {
+    background: #007cba;
+    color: white;
+    border-color: #007cba;
+}
+
+.quick-actions {
+    background: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+}
+
+.actions-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.action-button {
+    background: white;
+    border: 2px solid #dee2e6;
+    border-radius: 8px;
+    padding: 16px;
+    text-align: center;
+    text-decoration: none;
+    color: #495057;
+    transition: all 0.3s ease;
+}
+
+.action-button:hover {
+    border-color: #007cba;
+    color: #007cba;
+    transform: translateY(-2px);
+}
+
+.action-button.primary {
+    border-color: #28a745;
+    color: #28a745;
+}
+
+.action-button.primary:hover {
+    background: #28a745;
+    color: white;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .actions-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .tracks-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .session-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+}
+</style>
+{% endblock %}
+
+{% block content_title %}
+{% if original %}
+<div class="breadcrumb">
+    <a href="{% url 'admin:retreats_retreat_changelist' %}">Retreats</a> 
+    &raquo; 
+    <a href="{% url 'admin:retreats_retreat_change' original.retreat.id %}">{{ original.retreat.name }}</a>
+    &raquo; 
+    {{ original.title }}
+</div>
+{% endif %}
+{{ block.super }}
+{% endblock %}
+
+{% block after_related_objects %}{{ block.super }}
+{% if original %}
+<div class="session-management">
+    <div class="session-header">
+        <h2 class="session-title">🎵 Track Management</h2>
+        <a href="{% url 'retreats:bulk_upload_tracks' original.id %}" class="big-button" style="background: #28a745; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600;">
+            📂 Bulk Upload Files
+        </a>
+    </div>
+
+    {% if original.tracks.count == 0 %}
+    <!-- No tracks yet -->
+    <div class="upload-section">
+        <div class="upload-icon">🎵</div>
+        <div class="upload-title">Ready to Upload Audio Files</div>
+        <div class="upload-description">
+            Drag & drop MP3 files to automatically create tracks from filenames like:<br>
+            <code>"001 JKR How to relate to our mind-(12 April AM_part_1).mp3"</code>
+        </div>
+        <a href="{% url 'retreats:bulk_upload_tracks' original.id %}" class="big-button" style="background: #28a745; color: white; padding: 16px 32px; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 18px;">
+            🚀 Start Uploading
+        </a>
+    </div>
+    
+    {% else %}
+    <!-- Has tracks -->
+    <div style="background: #e8f5e8; border: 1px solid #28a745; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+        <strong>✅ {{ original.tracks.count }} track{{ original.tracks.count|pluralize }} uploaded</strong>
+        <div style="margin-top: 8px;">
+            <a href="{% url 'retreats:bulk_upload_tracks' original.id %}" style="color: #28a745; text-decoration: none; font-weight: 600;">
+                📂 Add more files
+            </a>
+        </div>
+    </div>
+
+    <div class="tracks-grid">
+        {% for track in original.tracks.all %}
+        <div class="track-card">
+            <div class="track-header">
+                <div class="track-number">{{ track.track_number }}</div>
+                <div class="track-title">{{ track.title|truncatechars:30 }}</div>
+            </div>
+            <div class="track-meta">
+                {% if track.file_size_mb %}{{ track.file_size_mb }} MB • {% endif %}
+                {{ track.language|upper }}
+                {% if track.audio_file %}
+                <br><a href="{{ track.audio_file.url }}" target="_blank" style="color: #007cba; font-size: 12px;">🔗 View File</a>
+                {% endif %}
+            </div>
+            <div class="track-actions">
+                <a href="{% url 'admin:retreats_track_change' track.id %}" class="track-btn">
+                    ✏️ Edit
+                </a>
+                <a href="{% url 'admin:retreats_track_delete' track.id %}" class="track-btn" style="color: #dc3545;">
+                    🗑️ Delete
+                </a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<!-- Quick Actions -->
+<div class="quick-actions">
+    <h3>⚡ Quick Actions</h3>
+    <div class="actions-grid">
+        <a href="{% url 'admin:retreats_track_add' %}?session={{ original.id }}" class="action-button">
+            <div style="font-size: 24px; margin-bottom: 8px;">➕</div>
+            <div>Add Single Track</div>
+        </a>
+        
+        <a href="{% url 'retreats:bulk_upload_tracks' original.id %}" class="action-button primary">
+            <div style="font-size: 24px; margin-bottom: 8px;">📂</div>
+            <div>Bulk Upload</div>
+        </a>
+        
+        <a href="{% url 'admin:retreats_retreat_change' original.retreat.id %}" class="action-button">
+            <div style="font-size: 24px; margin-bottom: 8px;">↩️</div>
+            <div>Back to Retreat</div>
+        </a>
+    </div>
+</div>
+
+{% endif %}
+{% endblock %}
