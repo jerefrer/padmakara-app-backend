@@ -1,0 +1,25 @@
+NEW USER APPROVAL REQUEST - Padmakara Admin
+
+A new user has requested access to the Padmakara app and needs admin approval.
+
+USER INFORMATION:
+Name: {{ approval_request.first_name }} {{ approval_request.last_name }}
+Email: {{ approval_request.email }}
+Requested: {{ approval_request.requested_at|date:"F j, Y \a\t g:i A" }}
+
+{% if approval_request.message %}MESSAGE FROM USER:
+{{ approval_request.message }}
+
+{% endif %}TECHNICAL DETAILS:
+Device: {{ approval_request.device_name|default:approval_request.device_type|default:"Unknown" }}
+IP Address: {{ approval_request.ip_address|default:"Not available" }}
+Requested at: {{ approval_request.requested_at|date:"c" }}
+
+REVIEW REQUEST:
+{{ admin_url }}
+
+Next Steps: Please review and approve or reject this user in the admin panel. The user will be notified by email of your decision.
+
+---
+This notification was sent from the Padmakara admin system.
+Please review and respond to approval requests promptly.

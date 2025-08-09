@@ -609,7 +609,7 @@ class RetreatParticipationAdmin(ModelAdmin):
     ]
     
     search_fields = [
-        'user__username', 'user__email',
+        'user__email',
         'retreat__name', 'notes'
     ]
     

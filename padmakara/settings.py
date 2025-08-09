@@ -237,7 +237,11 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only in development
 
 # Email Configuration
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
+if DEBUG:
+    # Use custom browser backend for development - opens emails in browser
+    EMAIL_BACKEND = 'utils.email_backends.BrowserEmailBackend'
+else:
+    EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
 if not DEBUG:
     EMAIL_HOST = config('EMAIL_HOST', default='')
     EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
@@ -246,6 +250,12 @@ if not DEBUG:
     EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
 
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@padmakara.pt')
+
+# Frontend URL for magic links
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8081' if DEBUG else 'https://app.padmakara.pt')
+
+# Site name for emails
+SITE_NAME = config('SITE_NAME', default='Padmakara')
 
 # Celery Configuration (for background tasks)
 CELERY_BROKER_URL = config('REDIS_URL', default='redis://localhost:6379/0')

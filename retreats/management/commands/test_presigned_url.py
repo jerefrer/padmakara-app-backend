@@ -85,7 +85,7 @@ class Command(BaseCommand):
             user = User.objects.filter(is_staff=True).first()
             if not user:
                 user = User.objects.create_user(
-                    username='test_presigned_user',
+                    email='test_presigned_user@example.com',
                     is_staff=True
                 )
             request.user = user
@@ -119,7 +119,7 @@ class Command(BaseCommand):
                 place.delete()
             if 'Test' in teacher.name:
                 teacher.delete()
-            if user.username == 'test_presigned_user':
+            if user.email == 'test_presigned_user@example.com':
                 user.delete()
                 
             self.stdout.write("🧹 Cleaned up test data")

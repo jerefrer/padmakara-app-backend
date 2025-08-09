@@ -1,33 +1,65 @@
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
 from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
+import uuid
+import secrets
+
+
+class UserManager(BaseUserManager):
+    """
+    Custom user manager for email-based authentication
+    """
+    
+    def create_user(self, email, password=None, **extra_fields):
+        """
+        Create and save a User with the given email and password
+        """
+        if not email:
+            raise ValueError('The Email field must be set')
+        
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+    
+    def create_superuser(self, email, password=None, **extra_fields):
+        """
+        Create and save a SuperUser with the given email and password
+        """
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        
+        if extra_fields.get('is_staff') is not True:
+            raise ValueError('Superuser must have is_staff=True.')
+        if extra_fields.get('is_superuser') is not True:
+            raise ValueError('Superuser must have is_superuser=True.')
+        
+        return self.create_user(email, password, **extra_fields)
 
 
 class User(AbstractUser):
     """
     Custom User model for Padmakara Buddhist retreat app
-    Extends Django's built-in User with retreat-specific fields
+    Uses email as the primary authentication field instead of username
     """
+    
+    # Remove username field and use email for authentication
+    username = None
+    email = models.EmailField(_('Email Address'), unique=True)
+    
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = []  # Remove username from required fields
+    
+    objects = UserManager()
     
     LANGUAGE_CHOICES = [
         ('pt', 'Português'),
         ('en', 'English'),
     ]
     
-    SUBSCRIPTION_STATUS_CHOICES = [
-        ('active', _('Active')),
-        ('inactive', _('Inactive')),
-        ('trial', _('Trial')),
-        ('expired', _('Expired')),
-    ]
-    
-    SUBSCRIPTION_PLAN_CHOICES = [
-        ('basic', _('Basic')),
-        ('premium', _('Premium')),
-        ('lifetime', _('Lifetime')),
-    ]
 
     # Contact Information
     phone_regex = RegexValidator(
@@ -39,27 +71,8 @@ class User(AbstractUser):
     # Profile Information
     dharma_name = models.CharField(_('Dharma Name'), max_length=100, blank=True, 
                                   help_text=_('Your Buddhist practice name'))
-    birth_date = models.DateField(_('Birth Date'), null=True, blank=True)
-    bio = models.TextField(_('Biography'), max_length=500, blank=True)
-    website = models.URLField(_('Website'), blank=True)
-    location = models.CharField(_('Location'), max_length=100, blank=True)
     
     
-    # Subscription Information
-    subscription_status = models.CharField(
-        _('Subscription Status'),
-        max_length=20,
-        choices=SUBSCRIPTION_STATUS_CHOICES,
-        default='trial'
-    )
-    subscription_plan = models.CharField(
-        _('Subscription Plan'),
-        max_length=20,
-        choices=SUBSCRIPTION_PLAN_CHOICES,
-        default='basic'
-    )
-    subscription_start_date = models.DateTimeField(_('Subscription Start Date'), null=True, blank=True)
-    subscription_end_date = models.DateTimeField(_('Subscription End Date'), null=True, blank=True)
     
     # Preferences
     preferred_language = models.CharField(
@@ -71,8 +84,6 @@ class User(AbstractUser):
     email_notifications = models.BooleanField(_('Email Notifications'), default=True)
     push_notifications = models.BooleanField(_('Push Notifications'), default=True)
     
-    # Profile Picture
-    avatar = models.ImageField(_('Avatar'), upload_to='avatars/', null=True, blank=True)
     
     # Metadata
     is_verified = models.BooleanField(_('Email Verified'), default=False)
@@ -95,21 +106,13 @@ class User(AbstractUser):
         elif self.get_full_name():
             return self.get_full_name()
         else:
-            return self.username
+            return self.email
 
     @property
     def full_name(self):
         """Return full name"""
         return self.get_full_name()
 
-    @property
-    def is_subscription_active(self):
-        """Check if subscription is currently active"""
-        if self.subscription_status != 'active':
-            return False
-        if self.subscription_end_date and self.subscription_end_date < timezone.now():
-            return False
-        return True
 
     def update_last_activity(self):
         """Update last activity timestamp"""
@@ -259,3 +262,187 @@ class UserGroupMembership(models.Model):
         self.status = 'cancelled'
         self.cancelled_date = timezone.now()
         self.save()
+
+
+class DeviceActivation(models.Model):
+    """
+    Tracks activated devices for passwordless authentication
+    """
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='device_activations')
+    device_fingerprint = models.CharField(_('Device Fingerprint'), max_length=255, unique=True)
+    device_name = models.CharField(_('Device Name'), max_length=100, blank=True)
+    device_type = models.CharField(_('Device Type'), max_length=50, blank=True)  # ios, android, web
+    
+    # Activation details
+    activated_at = models.DateTimeField(_('Activated At'), auto_now_add=True)
+    last_used = models.DateTimeField(_('Last Used'), auto_now=True)
+    is_active = models.BooleanField(_('Is Active'), default=True)
+    
+    # Security
+    ip_address = models.GenericIPAddressField(_('IP Address'), null=True, blank=True)
+    user_agent = models.TextField(_('User Agent'), blank=True)
+    
+    class Meta:
+        verbose_name = _('Device Activation')
+        verbose_name_plural = _('Device Activations')
+        ordering = ['-activated_at']
+        indexes = [
+            models.Index(fields=['user', '-activated_at']),
+            models.Index(fields=['device_fingerprint']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.get_display_name()} - {self.device_name or self.device_type or 'Unknown Device'}"
+
+    def deactivate(self):
+        """Deactivate this device"""
+        self.is_active = False
+        self.save(update_fields=['is_active'])
+
+
+class MagicLinkToken(models.Model):
+    """
+    Single-use magic link tokens for device activation
+    """
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='magic_tokens')
+    token = models.CharField(_('Token'), max_length=64, unique=True)
+    
+    # Request details
+    email = models.EmailField(_('Email'))
+    device_fingerprint = models.CharField(_('Device Fingerprint'), max_length=255)
+    device_name = models.CharField(_('Device Name'), max_length=100, blank=True)
+    device_type = models.CharField(_('Device Type'), max_length=50, blank=True)
+    
+    # Status and timing
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    expires_at = models.DateTimeField(_('Expires At'))
+    used_at = models.DateTimeField(_('Used At'), null=True, blank=True)
+    is_used = models.BooleanField(_('Is Used'), default=False)
+    
+    # Security
+    ip_address = models.GenericIPAddressField(_('IP Address'), null=True, blank=True)
+    user_agent = models.TextField(_('User Agent'), blank=True)
+    
+    class Meta:
+        verbose_name = _('Magic Link Token')
+        verbose_name_plural = _('Magic Link Tokens')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def __str__(self):
+        return f"Token for {self.email} - {self.created_at}"
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        if not self.expires_at:
+            # Token expires in 1 hour
+            self.expires_at = timezone.now() + timezone.timedelta(hours=1)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self):
+        """Check if token is expired"""
+        return timezone.now() > self.expires_at
+
+    @property
+    def is_valid(self):
+        """Check if token is valid (not used and not expired)"""
+        return not self.is_used and not self.is_expired
+
+    def use_token(self):
+        """Mark token as used"""
+        if not self.is_valid:
+            raise ValueError("Token is already used or expired")
+        
+        self.is_used = True
+        self.used_at = timezone.now()
+        self.save(update_fields=['is_used', 'used_at'])
+
+
+class UserApprovalRequest(models.Model):
+    """
+    Requests for new user approval by admins
+    """
+    
+    STATUS_CHOICES = [
+        ('pending', _('Pending')),
+        ('approved', _('Approved')),
+        ('rejected', _('Rejected')),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    email = models.EmailField(_('Email'))
+    first_name = models.CharField(_('First Name'), max_length=30)
+    last_name = models.CharField(_('Last Name'), max_length=30)
+    message = models.TextField(_('Message to Admin'), blank=True)
+    
+    # Status
+    status = models.CharField(_('Status'), max_length=20, choices=STATUS_CHOICES, default='pending')
+    admin_message = models.TextField(_('Admin Message'), blank=True, 
+                                   help_text=_('Optional message to send to user upon rejection'))
+    
+    # Dates
+    requested_at = models.DateTimeField(_('Requested At'), auto_now_add=True)
+    reviewed_at = models.DateTimeField(_('Reviewed At'), null=True, blank=True)
+    reviewed_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='reviewed_requests')
+    
+    # Device info from request
+    device_fingerprint = models.CharField(_('Device Fingerprint'), max_length=255, blank=True)
+    device_name = models.CharField(_('Device Name'), max_length=100, blank=True)
+    device_type = models.CharField(_('Device Type'), max_length=50, blank=True)
+    ip_address = models.GenericIPAddressField(_('IP Address'), null=True, blank=True)
+    user_agent = models.TextField(_('User Agent'), blank=True)
+    
+    class Meta:
+        verbose_name = _('User Approval Request')
+        verbose_name_plural = _('User Approval Requests')
+        ordering = ['-requested_at']
+        indexes = [
+            models.Index(fields=['status', '-requested_at']),
+            models.Index(fields=['email']),
+        ]
+
+    def __str__(self):
+        return f"{self.first_name} {self.last_name} ({self.email}) - {self.get_status_display()}"
+
+    def approve(self, admin_user):
+        """Approve the request and create user"""
+        if self.status != 'pending':
+            raise ValueError("Request is not pending")
+        
+        # Create the user
+        user = User.objects.create_user(
+            email=self.email,
+            first_name=self.first_name,
+            last_name=self.last_name,
+            is_active=True
+        )
+        
+        # Update request status
+        self.status = 'approved'
+        self.reviewed_at = timezone.now()
+        self.reviewed_by = admin_user
+        self.save(update_fields=['status', 'reviewed_at', 'reviewed_by'])
+        
+        return user
+
+    def reject(self, admin_user, admin_message=''):
+        """Reject the request"""
+        if self.status != 'pending':
+            raise ValueError("Request is not pending")
+        
+        self.status = 'rejected'
+        self.admin_message = admin_message
+        self.reviewed_at = timezone.now()
+        self.reviewed_by = admin_user
+        self.save(update_fields=['status', 'admin_message', 'reviewed_at', 'reviewed_by'])

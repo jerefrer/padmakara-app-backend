@@ -22,7 +22,11 @@ from django.conf.urls.static import static
 # Unfold handles admin site configuration via UNFOLD settings
 
 urlpatterns = [
-    path('admin/retreats/', include('retreats.urls')),
+    # API endpoints
+    path('api/', include('accounts.urls')),
+    path('api/retreats/', include('retreats.urls')),
+    
+    # Admin
     path('admin/', admin.site.urls),
 ]
 

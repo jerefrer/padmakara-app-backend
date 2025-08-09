@@ -1,0 +1,28 @@
+{{ site_name }} - Activate your device
+
+Dear {% if user.dharma_name %}{{ user.dharma_name }}{% else %}{{ user.get_full_name|default:user.email }}{% endif %},
+
+Welcome to our sacred community space. We've received a request to activate the Padmakara app on {{ device_name }}.
+
+To complete the activation and access your retreat recordings and teachings, please visit this link:
+
+{{ magic_link }}
+
+Device Information: {{ device_name|title }}
+
+🔒 Security Notice: This link is unique to you and expires in 1 hour. If you didn't request this activation, please ignore this email and contact our support team.
+
+Once activated, you'll be able to:
+- Access your retreat recordings offline
+- Read transcripts with highlighting
+- Track your listening progress
+- Create personal bookmarks
+
+May your practice be fruitful and bring you peace.
+
+With metta,
+The Padmakara Team
+
+---
+This is an automated message from {{ site_name }}.
+If you need assistance, please contact our support team.

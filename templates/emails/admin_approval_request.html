@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New User Approval Request</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #374151;
+            background-color: #f9fafb;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .header {
+            background-color: #1f2937;
+            color: white;
+            padding: 25px 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .content {
+            padding: 30px;
+        }
+        .user-info {
+            background-color: #f3f4f6;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .user-info h3 {
+            margin: 0 0 15px 0;
+            color: #1f2937;
+            font-size: 18px;
+        }
+        .info-row {
+            display: flex;
+            margin: 8px 0;
+        }
+        .info-label {
+            font-weight: 600;
+            color: #4b5563;
+            min-width: 120px;
+        }
+        .info-value {
+            color: #1f2937;
+        }
+        .message-section {
+            background-color: #eff6ff;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            border-left: 4px solid #3b82f6;
+        }
+        .actions {
+            text-align: center;
+            margin: 30px 0;
+        }
+        .btn {
+            display: inline-block;
+            padding: 12px 24px;
+            margin: 0 10px;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background-color: #059669;
+            color: white;
+        }
+        .btn-secondary {
+            background-color: #6b7280;
+            color: white;
+        }
+        .device-info {
+            background-color: #f9fafb;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            font-size: 13px;
+            color: #6b7280;
+        }
+        .footer {
+            background-color: #f9fafb;
+            padding: 20px 30px;
+            text-align: center;
+            color: #6b7280;
+            font-size: 13px;
+            border-top: 1px solid #e5e7eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>New User Approval Request</h1>
+            <p style="margin: 5px 0 0 0; opacity: 0.8;">Padmakara Admin Panel</p>
+        </div>
+        
+        <div class="content">
+            <p>A new user has requested access to the Padmakara app and needs admin approval.</p>
+            
+            <div class="user-info">
+                <h3>👤 User Information</h3>
+                <div class="info-row">
+                    <div class="info-label">Name:</div>
+                    <div class="info-value">{{ approval_request.first_name }} {{ approval_request.last_name }}</div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Email:</div>
+                    <div class="info-value">{{ approval_request.email }}</div>
+                </div>
+                <div class="info-row">
+                    <div class="info-label">Requested:</div>
+                    <div class="info-value">{{ approval_request.requested_at|date:"F j, Y \a\t g:i A" }}</div>
+                </div>
+            </div>
+            
+            {% if approval_request.message %}
+            <div class="message-section">
+                <h4 style="margin: 0 0 10px 0; color: #1f2937;">💬 Message from User:</h4>
+                <p style="margin: 0; color: #374151;">{{ approval_request.message }}</p>
+            </div>
+            {% endif %}
+            
+            <div class="actions">
+                <a href="{{ admin_url }}" class="btn btn-primary">Review Request</a>
+            </div>
+            
+            <div class="device-info">
+                <strong>🔧 Technical Details:</strong><br>
+                Device: {{ approval_request.device_name|default:approval_request.device_type|default:"Unknown" }}<br>
+                IP Address: {{ approval_request.ip_address|default:"Not available" }}<br>
+                Requested at: {{ approval_request.requested_at|date:"c" }}
+            </div>
+            
+            <p style="margin-top: 30px; color: #6b7280; font-size: 14px;">
+                <strong>Next Steps:</strong> Click "Review Request" to approve or reject this user in the admin panel. 
+                The user will be notified by email of your decision.
+            </p>
+        </div>
+        
+        <div class="footer">
+            <p>This notification was sent from the Padmakara admin system.</p>
+            <p>Please review and respond to approval requests promptly.</p>
+        </div>
+    </div>
+</body>
+</html>
