@@ -1,5 +1,5 @@
 """
-Custom admin views for retreat management
+Custom admin views for retreat management and API endpoints
 """
 import json
 import logging
@@ -13,7 +13,12 @@ from django.views.decorators.http import require_http_methods
 from django.core.files.base import ContentFile
 from django.db import transaction, connection
 from django.db import models
-from .models import Session, Track
+from django.contrib.auth.decorators import login_required
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework import status
+from .models import Session, Track, Retreat, RetreatGroup, RetreatParticipation
 from utils.track_parser import parse_track_filename, validate_audio_file, get_file_size_mb
 
 # Set up logging
@@ -394,3 +399,312 @@ def check_upload_progress(request, session_id):
         'tracks_count': len(tracks),
         'tracks': tracks
     })
+
+
+# API Endpoints for Frontend
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_retreats(request):
+    """
+    Get all retreats for which the authenticated user has a Retreat Participation with status 'attended'
+    """
+    try:
+        user = request.user
+        
+        # Get all retreats where user has 'attended' participation status
+        attended_retreats = Retreat.objects.filter(
+            participants__user=user,
+            participants__status='attended'
+        ).prefetch_related(
+            'groups',
+            'places', 
+            'teachers',
+            'sessions__tracks'
+        ).distinct().order_by('-start_date')
+        
+        # Build retreat groups structure
+        retreat_groups_data = []
+        
+        # Group retreats by their retreat groups
+        groups_dict = {}
+        for retreat in attended_retreats:
+            for group in retreat.groups.all():
+                if group.id not in groups_dict:
+                    groups_dict[group.id] = {
+                        'group': group,
+                        'retreats': []
+                    }
+                groups_dict[group.id]['retreats'].append(retreat)
+        
+        # Build the response structure
+        for group_id, group_data in groups_dict.items():
+            group = group_data['group']
+            retreats = group_data['retreats']
+            
+            gatherings = []
+            for retreat in retreats:
+                # Build sessions data
+                sessions_data = []
+                for session in retreat.sessions.all().order_by('session_number'):
+                    # Build tracks data
+                    tracks_data = []
+                    for track in session.tracks.all().order_by('track_number'):
+                        # Use a default duration if none is set (approximately 30 minutes)
+                        duration_seconds = track.duration_minutes * 60 if track.duration_minutes > 0 else 1800
+                        tracks_data.append({
+                            'id': str(track.id),
+                            'title': track.title,
+                            'duration': duration_seconds,  # Convert to seconds
+                            'audioUrl': '',  # Will be provided via presigned URLs
+                            'transcriptUrl': '',  # Will be provided via presigned URLs
+                            'order': track.track_number
+                        })
+                    
+                    sessions_data.append({
+                        'id': str(session.id),
+                        'name': session.title,
+                        'type': session.get_time_period_display().lower(),
+                        'date': session.session_date.isoformat(),
+                        'tracks': tracks_data
+                    })
+                
+                # Determine season based on start date
+                season = 'spring' if retreat.start_date.month in [3, 4, 5, 6] else 'fall'
+                
+                gatherings.append({
+                    'id': str(retreat.id),
+                    'name': retreat.name,
+                    'season': season,
+                    'year': retreat.start_date.year,
+                    'startDate': retreat.start_date.isoformat(),
+                    'endDate': retreat.end_date.isoformat(),
+                    'sessions': sessions_data
+                })
+            
+            retreat_groups_data.append({
+                'id': str(group.id),
+                'name': group.name,
+                'description': group.description,
+                'gatherings': gatherings
+            })
+        
+        # Calculate total stats
+        total_gatherings = sum(len(group_data['gatherings']) for group_data in retreat_groups_data)
+        total_tracks = 0
+        for group_data in retreat_groups_data:
+            for gathering in group_data['gatherings']:
+                for session in gathering['sessions']:
+                    total_tracks += len(session['tracks'])
+        
+        # Get recent gatherings (last 3)
+        recent_gatherings = []
+        all_gatherings = []
+        for group_data in retreat_groups_data:
+            all_gatherings.extend(group_data['gatherings'])
+        
+        # Sort by start date and take last 3
+        all_gatherings.sort(key=lambda x: x['startDate'], reverse=True)
+        recent_gatherings = all_gatherings[:3]
+        
+        response_data = {
+            'retreat_groups': retreat_groups_data,
+            'recent_gatherings': recent_gatherings,
+            'total_stats': {
+                'total_groups': len(retreat_groups_data),
+                'total_gatherings': total_gatherings,
+                'total_tracks': total_tracks,
+                'completed_tracks': int(total_tracks * 0.3)  # Mock completion percentage
+            }
+        }
+        
+        logger.info(f"Retrieved {len(retreat_groups_data)} retreat groups for user {user.id}")
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving user retreats: {str(e)}")
+        return Response(
+            {'error': 'Failed to retrieve retreats'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def retreat_details(request, retreat_id):
+    """
+    Get detailed information about a specific retreat including all sessions and tracks
+    """
+    try:
+        user = request.user
+        
+        # Get retreat with user access check
+        retreat = get_object_or_404(
+            Retreat.objects.filter(
+                participants__user=user,
+                participants__status='attended'
+            ).prefetch_related(
+                'groups',
+                'places',
+                'teachers', 
+                'sessions__tracks'
+            ),
+            id=retreat_id
+        )
+        
+        # Build sessions data
+        sessions_data = []
+        for session in retreat.sessions.all().order_by('session_number'):
+            # Build tracks data
+            tracks_data = []
+            for track in session.tracks.all().order_by('track_number'):
+                # Use a default duration if none is set (approximately 30 minutes)
+                duration_seconds = track.duration_minutes * 60 if track.duration_minutes > 0 else 1800
+                tracks_data.append({
+                    'id': str(track.id),
+                    'title': track.title,
+                    'duration': duration_seconds,  # Convert to seconds
+                    'audioUrl': '',  # Will be provided via presigned URLs
+                    'transcriptUrl': '',  # Will be provided via presigned URLs
+                    'order': track.track_number
+                })
+            
+            sessions_data.append({
+                'id': str(session.id),
+                'name': session.title,
+                'type': session.get_time_period_display().lower(),
+                'date': session.session_date.isoformat(),
+                'tracks': tracks_data
+            })
+        
+        # Get retreat group info
+        retreat_group = retreat.groups.first()
+        
+        # Determine season based on start date
+        season = 'spring' if retreat.start_date.month in [3, 4, 5, 6] else 'fall'
+        
+        response_data = {
+            'id': str(retreat.id),
+            'name': retreat.name,
+            'season': season,
+            'year': retreat.start_date.year,
+            'startDate': retreat.start_date.isoformat(),
+            'endDate': retreat.end_date.isoformat(),
+            'sessions': sessions_data,
+            'retreat_group': {
+                'id': str(retreat_group.id) if retreat_group else '',
+                'name': retreat_group.name if retreat_group else ''
+            }
+        }
+        
+        logger.info(f"Retrieved retreat details for retreat {retreat_id} for user {user.id}")
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving retreat details: {str(e)}")
+        return Response(
+            {'error': 'Failed to retrieve retreat details'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def session_details(request, session_id):
+    """
+    Get detailed information about a specific session including all tracks
+    """
+    try:
+        user = request.user
+        
+        # Get session with user access check (through retreat participation)
+        session = get_object_or_404(
+            Session.objects.filter(
+                retreat__participants__user=user,
+                retreat__participants__status='attended'
+            ).prefetch_related(
+                'tracks',
+                'retreat__groups'
+            ),
+            id=session_id
+        )
+        
+        # Build tracks data
+        tracks_data = []
+        for track in session.tracks.all().order_by('track_number'):
+            # Use a default duration if none is set (approximately 30 minutes)
+            duration_seconds = track.duration_minutes * 60 if track.duration_minutes > 0 else 1800
+            tracks_data.append({
+                'id': str(track.id),
+                'title': track.title,
+                'duration': duration_seconds,  # Convert to seconds
+                'audioUrl': '',  # Will be provided via presigned URLs
+                'transcriptUrl': '',  # Will be provided via presigned URLs
+                'order': track.track_number
+            })
+        
+        response_data = {
+            'id': str(session.id),
+            'name': session.title,
+            'type': session.get_time_period_display().lower(),
+            'date': session.session_date.isoformat(),
+            'tracks': tracks_data,
+            'gathering': {
+                'id': str(session.retreat.id),
+                'name': session.retreat.name
+            }
+        }
+        
+        logger.info(f"Retrieved session details for session {session_id} for user {user.id}")
+        return Response(response_data, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error retrieving session details: {str(e)}")
+        return Response(
+            {'error': 'Failed to retrieve session details'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def track_presigned_url(request, track_id):
+    """
+    Get presigned URL for audio track access
+    """
+    try:
+        user = request.user
+        
+        # Get track with user access check
+        track = get_object_or_404(
+            Track.objects.filter(
+                session__retreat__participants__user=user,
+                session__retreat__participants__status='attended'
+            ),
+            id=track_id
+        )
+        
+        if not track.audio_file:
+            return Response(
+                {'error': 'Audio file not available'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Generate presigned URL for S3 access
+        try:
+            presigned_url = track.audio_file.url
+            return Response({
+                'presigned_url': presigned_url
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.error(f"Error generating presigned URL for track {track_id}: {str(e)}")
+            return Response(
+                {'error': 'Failed to generate audio URL'}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+    except Exception as e:
+        logger.error(f"Error retrieving track presigned URL: {str(e)}")
+        return Response(
+            {'error': 'Failed to get audio URL'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
