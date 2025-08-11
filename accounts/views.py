@@ -211,37 +211,6 @@ def activate_device(request, token):
                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def check_device_status(request):
-    """
-    Check if current device is activated for the user
-    """
-    device_fingerprint = request.data.get('device_fingerprint')
-    if not device_fingerprint:
-        return Response({'error': 'Device fingerprint required'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    device_activation = DeviceActivation.objects.filter(
-        user=request.user,
-        device_fingerprint=device_fingerprint,
-        is_active=True
-    ).first()
-    
-    if device_activation:
-        # Update last used time
-        device_activation.last_used = timezone.now()
-        device_activation.save(update_fields=['last_used'])
-        
-        return Response({
-            'status': 'activated',
-            'device': DeviceActivationSerializer(device_activation).data
-        })
-    else:
-        return Response({
-            'status': 'not_activated',
-            'message': 'Device not activated'
-        })
-
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
@@ -249,14 +218,15 @@ def deactivate_device(request):
     """
     Deactivate a specific device
     """
-    device_id = request.data.get('device_id')
-    if not device_id:
-        return Response({'error': 'Device ID required'}, status=status.HTTP_400_BAD_REQUEST)
+    device_fingerprint = request.data.get('device_fingerprint')
+    if not device_fingerprint:
+        return Response({'error': 'Device fingerprint required'}, status=status.HTTP_400_BAD_REQUEST)
     
     try:
         device_activation = DeviceActivation.objects.get(
-            id=device_id,
-            user=request.user
+            device_fingerprint=device_fingerprint,
+            user=request.user,
+            is_active=True
         )
         device_activation.deactivate()
         
@@ -266,7 +236,7 @@ def deactivate_device(request):
         })
         
     except DeviceActivation.DoesNotExist:
-        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Device not found or already deactivated'}, status=status.HTTP_404_NOT_FOUND)
 
 
 @api_view(['GET'])
@@ -283,6 +253,58 @@ def list_user_devices(request):
     return Response({
         'devices': DeviceActivationSerializer(devices, many=True).data
     })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def discover_device_activation(request):
+    """
+    Discover if a device has been activated (unauthenticated endpoint for polling)
+    Used by mobile app to detect when magic link was clicked from another device
+    """
+    device_fingerprint = request.data.get('device_fingerprint')
+    if not device_fingerprint:
+        return Response({'error': 'Device fingerprint required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        # Check if device exists and is activated
+        device_activation = DeviceActivation.objects.filter(
+            device_fingerprint=device_fingerprint,
+            is_active=True
+        ).first()
+        
+        if device_activation:
+            # Device is activated - generate fresh tokens for this session
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(device_activation.user)
+            
+            # Update last used time
+            device_activation.last_used = timezone.now()
+            device_activation.save(update_fields=['last_used'])
+            
+            return Response({
+                'status': 'activated',
+                'message': 'Device is activated',
+                'access_token': str(refresh.access_token),
+                'refresh_token': str(refresh),
+                'user': {
+                    'id': device_activation.user.id,
+                    'email': device_activation.user.email,
+                    'name': device_activation.user.get_full_name() or device_activation.user.email,
+                    'dharma_name': device_activation.user.dharma_name
+                },
+                'device': DeviceActivationSerializer(device_activation).data
+            })
+        else:
+            # Device not activated yet
+            return Response({
+                'status': 'not_activated',
+                'message': 'Device not activated yet'
+            })
+        
+    except Exception as e:
+        logger.error(f"Error in discover_device_activation: {e}")
+        return Response({'error': 'An error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 # Helper functions
