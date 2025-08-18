@@ -151,22 +151,6 @@ class BrowserEmailBackend(BaseEmailBackend):
     <div class="email-content">
         {html_body}
     </div>
-    
-    <script>
-        // Add click handlers to magic links
-        document.addEventListener('DOMContentLoaded', function() {{
-            const links = document.querySelectorAll('a[href*="/activate/"]');
-            links.forEach(link => {{
-                link.addEventListener('click', function(e) {{
-                    e.preventDefault();
-                    const href = this.href;
-                    if (confirm('Open magic link in new tab?\\n\\n' + href)) {{
-                        window.open(href, '_blank');
-                    }}
-                }});
-            }});
-        }});
-    </script>
 </body>
 </html>
         """
