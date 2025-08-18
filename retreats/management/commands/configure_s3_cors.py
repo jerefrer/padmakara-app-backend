@@ -35,7 +35,7 @@ class Command(BaseCommand):
         domain = options['domain']
         apply_config = options['apply']
         
-        # Generate CORS configuration
+        # Generate CORS configuration optimized for React Native
         cors_config = {
             'CORSRules': [
                 {
@@ -44,11 +44,26 @@ class Command(BaseCommand):
                         f'https://{domain}',
                         'http://localhost:8000',
                         'http://127.0.0.1:8000',
+                        '*'  # Allow all origins for React Native compatibility
                     ],
-                    'AllowedMethods': ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
-                    'AllowedHeaders': ['*'],
-                    'ExposeHeaders': ['ETag', 'x-amz-version-id'],
-                    'MaxAgeSeconds': 3000
+                    'AllowedMethods': ['GET', 'HEAD'],  # Only need GET/HEAD for presigned URLs
+                    'AllowedHeaders': [
+                        'Authorization',
+                        'Range',  # Critical for audio streaming
+                        'Content-Type',
+                        'Accept',
+                        'Origin',
+                        'User-Agent',
+                        'Cache-Control'
+                    ],
+                    'ExposeHeaders': [
+                        'Content-Range',
+                        'Content-Length', 
+                        'Accept-Ranges',
+                        'Content-Type',
+                        'ETag'
+                    ],
+                    'MaxAgeSeconds': 3600  # Cache preflight for 1 hour
                 }
             ]
         }
