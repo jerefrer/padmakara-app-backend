@@ -1,0 +1,22 @@
+{{ site_name }} - Ative o seu dispositivo
+
+Caro(a) {% if user.dharma_name %}{{ user.dharma_name }}{% else %}{{ user.get_full_name|default:user.email }}{% endif %},
+
+Recebemos um pedido para ativar a aplicação Padmakara em {{ device_name }}.
+
+Para completar a ativação e aceder às suas gravações de retiro, por favor visite este link:
+
+{{ magic_link }}
+
+Informação do Dispositivo: {{ device_name|title }}
+
+🔒 Aviso de Segurança: Este link é único para si e expira em 1 hora. Se não solicitou esta ativação, por favor ignore este email e contacte a nossa equipa de apoio.
+
+Uma vez ativado, poderá aceder às suas gravações de retiro.
+
+Tenha um excelente dia,
+A Equipa Padmakara
+
+---
+Esta é uma mensagem automática do {{ site_name }}.
+Se precisar de assistência, por favor envie um email para frere.jeremy@gmail.com.

@@ -7,6 +7,7 @@ from django.template.loader import render_to_string
 from django.shortcuts import render, get_object_or_404
 from django.conf import settings
 from django.utils import timezone
+import time
 from django.contrib.auth import get_user_model
 import logging
 
@@ -38,6 +39,7 @@ def request_magic_link(request):
     device_fingerprint = request.data.get('device_fingerprint', '')
     device_name = request.data.get('device_name', '')
     device_type = request.data.get('device_type', '')
+    language = request.data.get('language', 'en')  # Default to English if not provided
     
     try:
         # Check if user exists and is active
@@ -78,9 +80,9 @@ def request_magic_link(request):
         )
         
         # Send magic link email - now points to Django backend for HTML activation
-        magic_link = f"{settings.BACKEND_URL}/api/auth/activate/{magic_token.token}/"
+        magic_link = f"{settings.BACKEND_URL}/api/auth/activate/{magic_token.token}/?lang={language}"
         
-        send_magic_link_email(user, magic_link, device_name or device_type or 'your device')
+        send_magic_link_email(user, magic_link, device_name or device_type or 'your device', language)
         
         return Response({
             'status': 'magic_link_sent',
@@ -112,6 +114,7 @@ def request_user_approval(request):
         return Response({'errors': serializer.errors}, status=status.HTTP_400_BAD_REQUEST)
     
     data = serializer.validated_data
+    language = request.data.get('language', 'en')  # Default to English if not provided
     
     # Check if there's already a pending request for this email
     existing_request = UserApprovalRequest.objects.filter(
@@ -162,10 +165,19 @@ def activate_device(request, token):
             error_message = 'Token is invalid or expired'
             
             if request_wants_html(request):
+                # Check for language parameter from URL first, then detect from browser
+                url_language = request.GET.get('lang', '')
+                if url_language in ['en', 'pt']:
+                    detected_language = url_language
+                else:
+                    detected_language = detect_browser_language(request)
+                
                 return render(request, 'activation/activate.html', {
                     'status': 'error',
                     'error_message': error_message,
-                    'frontend_url': settings.FRONTEND_URL
+                    'frontend_url': settings.FRONTEND_URL,
+                    'detected_language': detected_language,
+                    'timestamp': int(time.time())
                 })
             else:
                 return Response({
@@ -201,11 +213,20 @@ def activate_device(request, token):
         
         if request_wants_html(request):
             # Return HTML page for browser requests
+            # Check for language parameter from URL first, then detect from browser
+            url_language = request.GET.get('lang', '')
+            if url_language in ['en', 'pt']:
+                detected_language = url_language
+            else:
+                detected_language = detect_browser_language(request)
+            
             return render(request, 'activation/activate.html', {
                 'status': 'success',
                 'user_name': user_name,
                 'device_name': device_name,
-                'frontend_url': settings.FRONTEND_URL
+                'frontend_url': settings.FRONTEND_URL,
+                'detected_language': detected_language,
+                'timestamp': int(time.time())
             })
         else:
             # Return JSON for API requests
@@ -234,10 +255,13 @@ def activate_device(request, token):
         error_message = 'An error occurred during activation'
         
         if request_wants_html(request):
+            detected_language = detect_browser_language(request)
             return render(request, 'activation/activate.html', {
                 'status': 'error',
                 'error_message': error_message,
-                'frontend_url': settings.FRONTEND_URL
+                'frontend_url': settings.FRONTEND_URL,
+                'detected_language': detected_language,
+                'timestamp': int(time.time())
             })
         else:
             return Response({'error': error_message}, 
@@ -375,12 +399,52 @@ def request_wants_html(request):
     return False
 
 
-def send_magic_link_email(user, magic_link, device_name):
-    """Send magic link email to user"""
+def detect_browser_language(request):
+    """
+    Detect user's preferred language from browser headers
+    """
+    # Get Accept-Language header
+    accept_language = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+    
+    # Parse language preferences (format: "en-US,en;q=0.9,pt;q=0.8")
+    languages = []
+    for lang_part in accept_language.split(','):
+        if ';q=' in lang_part:
+            lang, quality = lang_part.strip().split(';q=')
+            languages.append((lang.strip(), float(quality)))
+        else:
+            languages.append((lang_part.strip(), 1.0))
+    
+    # Sort by quality (preference)
+    languages.sort(key=lambda x: x[1], reverse=True)
+    
+    # Check for supported languages in order of preference
+    supported_languages = ['en', 'pt']
+    
+    for lang_code, _ in languages:
+        # Extract main language code (e.g., 'en' from 'en-US')
+        main_lang = lang_code.split('-')[0].lower()
+        if main_lang in supported_languages:
+            return main_lang
+    
+    # Default to English
+    return 'en'
+
+
+def send_magic_link_email(user, magic_link, device_name, language='en'):
+    """Send magic link email to user in the specified language"""
     try:
-        subject = 'Activate your Padmakara app'
+        # Select subject and templates based on language
+        if language == 'pt':
+            subject = 'Ative o seu app Padmakara'
+            html_template = 'emails/magic_link_pt.html'
+            txt_template = 'emails/magic_link_pt.txt'
+        else:
+            subject = 'Activate your Padmakara app'
+            html_template = 'emails/magic_link_en.html'
+            txt_template = 'emails/magic_link_en.txt'
         
-        html_message = render_to_string('emails/magic_link.html', {
+        html_message = render_to_string(html_template, {
             'user': user,
             'magic_link': magic_link,
             'device_name': device_name,
@@ -388,7 +452,7 @@ def send_magic_link_email(user, magic_link, device_name):
             'logo_base64': LOGO_BASE64
         })
         
-        plain_message = render_to_string('emails/magic_link.txt', {
+        plain_message = render_to_string(txt_template, {
             'user': user,
             'magic_link': magic_link,
             'device_name': device_name,
