@@ -251,8 +251,11 @@ if not DEBUG:
 
 DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@padmakara.pt')
 
-# Frontend URL for magic links
+# Frontend URL for magic links (React Native app)
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8081' if DEBUG else 'https://app.padmakara.pt')
+
+# Backend URL for magic links and admin
+BACKEND_URL = config('BACKEND_URL', default='http://localhost:8000' if DEBUG else 'https://api.padmakara.pt')
 
 # Site name for emails
 SITE_NAME = config('SITE_NAME', default='Padmakara')

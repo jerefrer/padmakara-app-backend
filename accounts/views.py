@@ -4,9 +4,9 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
+from django.shortcuts import render, get_object_or_404
 from django.conf import settings
 from django.utils import timezone
-from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 import logging
 
@@ -77,8 +77,8 @@ def request_magic_link(request):
             user_agent=request.META.get('HTTP_USER_AGENT', '')
         )
         
-        # Send magic link email
-        magic_link = f"{settings.FRONTEND_URL}/activate/{magic_token.token}"
+        # Send magic link email - now points to Django backend for HTML activation
+        magic_link = f"{settings.BACKEND_URL}/api/auth/activate/{magic_token.token}/"
         
         send_magic_link_email(user, magic_link, device_name or device_type or 'your device')
         
@@ -147,20 +147,31 @@ def request_user_approval(request):
     })
 
 
-@api_view(['POST'])
+@api_view(['GET', 'POST'])
 @permission_classes([permissions.AllowAny])
 def activate_device(request, token):
     """
     Step 3: Activate device using magic link token
+    Supports both HTML (browser) and JSON (API) responses
     """
     try:
         magic_token = get_object_or_404(MagicLinkToken, token=token)
         
+        # Check if token is valid
         if not magic_token.is_valid:
-            return Response({
-                'error': 'Token is invalid or expired',
-                'status': 'token_invalid'
-            }, status=status.HTTP_400_BAD_REQUEST)
+            error_message = 'Token is invalid or expired'
+            
+            if request_wants_html(request):
+                return render(request, 'activation/activate.html', {
+                    'status': 'error',
+                    'error_message': error_message,
+                    'frontend_url': settings.FRONTEND_URL
+                })
+            else:
+                return Response({
+                    'error': error_message,
+                    'status': 'token_invalid'
+                }, status=status.HTTP_400_BAD_REQUEST)
         
         # Mark token as used
         magic_token.use_token()
@@ -184,32 +195,53 @@ def activate_device(request, token):
             device_activation.is_active = True
             device_activation.save()
         
-        # Generate JWT tokens
-        refresh = RefreshToken.for_user(magic_token.user)
+        # Prepare response data
+        user_name = magic_token.user.get_full_name() or magic_token.user.email
+        device_name = device_activation.device_name or 'This Device'
         
-        return Response({
-            'status': 'device_activated',
-            'message': 'Device successfully activated',
-            'access_token': str(refresh.access_token),
-            'refresh_token': str(refresh),
-            'user': {
-                'id': magic_token.user.id,
-                'email': magic_token.user.email,
-                'name': magic_token.user.get_full_name() or magic_token.user.email,
-                'dharma_name': magic_token.user.dharma_name
-            },
-            'device_activation': {
-                'id': str(device_activation.id),
-                'device_name': device_activation.device_name,
-                'device_type': device_activation.device_type,
-                'activated_at': device_activation.activated_at
-            }
-        })
+        if request_wants_html(request):
+            # Return HTML page for browser requests
+            return render(request, 'activation/activate.html', {
+                'status': 'success',
+                'user_name': user_name,
+                'device_name': device_name,
+                'frontend_url': settings.FRONTEND_URL
+            })
+        else:
+            # Return JSON for API requests
+            refresh = RefreshToken.for_user(magic_token.user)
+            return Response({
+                'status': 'device_activated',
+                'message': 'Device successfully activated',
+                'access_token': str(refresh.access_token),
+                'refresh_token': str(refresh),
+                'user': {
+                    'id': magic_token.user.id,
+                    'email': magic_token.user.email,
+                    'name': user_name,
+                    'dharma_name': magic_token.user.dharma_name
+                },
+                'device_activation': {
+                    'id': str(device_activation.id),
+                    'device_name': device_activation.device_name,
+                    'device_type': device_activation.device_type,
+                    'activated_at': device_activation.activated_at
+                }
+            })
         
     except Exception as e:
         logger.error(f"Error in activate_device: {e}")
-        return Response({'error': 'An error occurred during activation'}, 
-                       status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        error_message = 'An error occurred during activation'
+        
+        if request_wants_html(request):
+            return render(request, 'activation/activate.html', {
+                'status': 'error',
+                'error_message': error_message,
+                'frontend_url': settings.FRONTEND_URL
+            })
+        else:
+            return Response({'error': error_message}, 
+                           status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 
@@ -317,6 +349,30 @@ def get_client_ip(request):
     else:
         ip = request.META.get('REMOTE_ADDR')
     return ip
+
+
+def request_wants_html(request):
+    """
+    Determine if the request expects HTML response based on Accept header
+    """
+    accept_header = request.META.get('HTTP_ACCEPT', '')
+    
+    # Check if browser Accept header (contains text/html)
+    if 'text/html' in accept_header:
+        return True
+    
+    # Check if it's a GET request (magic link clicked in browser)
+    if request.method == 'GET':
+        return True
+        
+    # Check User-Agent for common browsers
+    user_agent = request.META.get('HTTP_USER_AGENT', '').lower()
+    browser_indicators = ['mozilla', 'chrome', 'safari', 'firefox', 'edge']
+    if any(indicator in user_agent for indicator in browser_indicators):
+        return True
+    
+    # Default to JSON for API requests
+    return False
 
 
 def send_magic_link_email(user, magic_link, device_name):
