@@ -387,11 +387,11 @@ class Track(models.Model):
     
     # Metadata
     duration_minutes = models.PositiveIntegerField(_('Duration (minutes)'), default=0)
+    duration_seconds = models.PositiveIntegerField(_('Duration (seconds)'), default=0, help_text=_('Accurate duration in seconds'))
     track_number = models.PositiveIntegerField(_('Track Number'), default=1)
     file_size = models.PositiveBigIntegerField(_('File Size (bytes)'), null=True, blank=True)
     
-    
-    # Metadata
+    # Timestamps
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
@@ -420,6 +420,24 @@ class Track(models.Model):
         if self.file_size:
             return round(self.file_size / (1024 * 1024), 2)
         return None
+    
+    @property
+    def duration(self):
+        """Get accurate duration in seconds, fallback to minutes if not available"""
+        if self.duration_seconds > 0:
+            return self.duration_seconds
+        elif self.duration_minutes > 0:
+            return self.duration_minutes * 60  # Convert minutes to seconds
+        return 1800  # Default fallback to 30 minutes if no duration available
+
+    def update_duration(self, duration_seconds):
+        """Update track duration (called by admin interface or API)"""
+        if duration_seconds and duration_seconds > 0:
+            self.duration_seconds = duration_seconds
+            self.duration_minutes = max(1, round(duration_seconds / 60))
+            self.save(update_fields=['duration_seconds', 'duration_minutes'])
+            return True
+        return False
 
     def delete(self, using=None, keep_parents=False):
         """Override delete to clean up S3 files and empty folders"""

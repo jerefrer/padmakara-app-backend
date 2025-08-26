@@ -199,6 +199,10 @@ def complete_s3_upload(request, session_id):
         track_info = data.get('track_info')
         file_size = data.get('file_size')
         
+        # Extract client-computed duration and metadata
+        client_duration_seconds = data.get('client_duration_seconds')
+        client_metadata = data.get('client_metadata', {})
+        
         if not all([s3_key, track_info]):
             return JsonResponse({'error': 'Missing required data'}, status=400)
         
@@ -223,23 +227,38 @@ def complete_s3_upload(request, session_id):
                         if first_group.startswith('pt') or 'portuguese' in first_group or 'português' in first_group:
                             language = 'pt'
                     
-                    # Create track with S3 file reference
+                    # Create track with S3 file reference and client-computed duration
                     from utils.storage import RetreatMediaStorage
                     storage = RetreatMediaStorage()
                     
-                    track = Track.objects.create(
-                        session=locked_session,
-                        title=track_info['title'],
-                        track_number=track_info['track_number'],
-                        file_size=file_size,
-                        language=language
-                    )
+                    # Prepare track creation data
+                    track_data = {
+                        'session': locked_session,
+                        'title': track_info['title'],
+                        'track_number': track_info['track_number'],
+                        'file_size': file_size,
+                        'language': language
+                    }
+                    
+                    # Include client-computed duration if available
+                    if client_duration_seconds and client_duration_seconds > 0:
+                        track_data['duration_seconds'] = client_duration_seconds
+                        track_data['duration_minutes'] = max(1, round(client_duration_seconds / 60))
+                        logger.info(f"Using client-computed duration: {client_duration_seconds}s")
+                    else:
+                        logger.info("No client duration provided, will use server-side calculation later")
+                    
+                    track = Track.objects.create(**track_data)
                     
                     # Set the file field manually to point to the S3 object
                     track.audio_file.name = s3_key
                     track.save()
                     
-                    logger.info(f"Track created successfully: ID={track.id}, S3 Key={s3_key}")
+                    # Log client metadata for debugging
+                    if client_metadata:
+                        logger.info(f"Client metadata for track {track.id}: {json.dumps(client_metadata)}")
+                    
+                    logger.info(f"Track created successfully: ID={track.id}, S3 Key={s3_key}, Duration={track.duration_seconds}s")
                     
                     return JsonResponse({
                         'success': True,
@@ -248,8 +267,10 @@ def complete_s3_upload(request, session_id):
                             'title': track.title,
                             'track_number': track.track_number,
                             'file_size_mb': track.file_size_mb,
+                            'duration_seconds': track.duration_seconds,
                             'filename': track_info['original_filename'],
                             's3_url': track.audio_file.url if track.audio_file else None,
+                            'client_computed': bool(client_duration_seconds)
                         }
                     })
                     
@@ -671,6 +692,9 @@ def track_presigned_url(request, track_id):
     """
     Get presigned URL for audio track access
     """
+    logger.info(f"🔍 [DEBUG] Starting presigned URL request for track {track_id}")
+    logger.info(f"🔍 [DEBUG] User: {request.user.email}, User ID: {request.user.id}")
+    
     try:
         user = request.user
         
@@ -683,27 +707,81 @@ def track_presigned_url(request, track_id):
             id=track_id
         )
         
+        logger.info(f"🔍 [DEBUG] Track found: {track.title}")
+        logger.info(f"🔍 [DEBUG] Track audio_file.name: {track.audio_file.name}")
+        logger.info(f"🔍 [DEBUG] Track audio_file.url: {track.audio_file.url}")
+        
         if not track.audio_file:
+            logger.warning(f"🔍 [DEBUG] No audio file for track {track_id}")
             return Response(
                 {'error': 'Audio file not available'}, 
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Generate presigned URL for S3 access
+        # Generate actual presigned URL for S3 access
         try:
-            presigned_url = track.audio_file.url
+            import boto3
+            from django.conf import settings
+            
+            logger.info(f"🔍 [DEBUG] S3 Configuration:")
+            logger.info(f"🔍 [DEBUG] - Bucket: {settings.AWS_STORAGE_BUCKET_NAME}")
+            logger.info(f"🔍 [DEBUG] - Region: {settings.AWS_S3_REGION_NAME}")
+            logger.info(f"🔍 [DEBUG] - Key ID: {settings.AWS_ACCESS_KEY_ID[:8]}...{settings.AWS_ACCESS_KEY_ID[-4:]}")
+            
+            # Create S3 client
+            s3_client = boto3.client(
+                's3',
+                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+                region_name=settings.AWS_S3_REGION_NAME
+            )
+            
+            logger.info(f"🔍 [DEBUG] S3 client created successfully")
+            
+            # Generate presigned URL (valid for 1 hour)
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': settings.AWS_STORAGE_BUCKET_NAME,
+                    'Key': track.audio_file.name  # S3 key from FileField
+                },
+                ExpiresIn=3600  # 1 hour expiration
+            )
+            
+            logger.info(f"🔍 [DEBUG] Generated presigned URL: {presigned_url[:100]}...")
+            logger.info(f"🔍 [DEBUG] URL contains AWS signature: {'Signature=' in presigned_url}")
+            logger.info(f"🔍 [DEBUG] URL contains expiration: {'Expires=' in presigned_url}")
+            
+            # Test the presigned URL immediately
+            logger.info(f"🔍 [DEBUG] Testing presigned URL...")
+            try:
+                import requests
+                test_response = requests.head(presigned_url, timeout=10)
+                logger.info(f"🔍 [DEBUG] Test response status: {test_response.status_code}")
+                logger.info(f"🔍 [DEBUG] Test response headers: {dict(test_response.headers)}")
+                
+                if test_response.status_code == 200:
+                    logger.info(f"✅ [DEBUG] Presigned URL test PASSED")
+                else:
+                    logger.error(f"❌ [DEBUG] Presigned URL test FAILED: {test_response.status_code}")
+                    
+            except Exception as test_error:
+                logger.error(f"❌ [DEBUG] Presigned URL test error: {test_error}")
+            
             return Response({
                 'presigned_url': presigned_url
             }, status=status.HTTP_200_OK)
         except Exception as e:
-            logger.error(f"Error generating presigned URL for track {track_id}: {str(e)}")
+            logger.error(f"❌ [DEBUG] Error generating presigned URL for track {track_id}: {str(e)}")
+            logger.error(f"❌ [DEBUG] Exception type: {type(e).__name__}")
             return Response(
                 {'error': 'Failed to generate audio URL'}, 
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
         
     except Exception as e:
-        logger.error(f"Error retrieving track presigned URL: {str(e)}")
+        logger.error(f"❌ [DEBUG] Error retrieving track presigned URL: {str(e)}")
+        logger.error(f"❌ [DEBUG] Exception type: {type(e).__name__}")
         return Response(
             {'error': 'Failed to get audio URL'}, 
             status=status.HTTP_500_INTERNAL_SERVER_ERROR

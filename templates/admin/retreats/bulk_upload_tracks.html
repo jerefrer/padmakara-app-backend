@@ -203,6 +203,91 @@ document.addEventListener('DOMContentLoaded', function() {
     let currentUploads = 0;
     const maxConcurrentUploads = 1;  // Reduced to 1 to prevent database locking
 
+    // Audio metadata extraction utilities
+    function extractAudioMetadata(file) {
+        return new Promise((resolve) => {
+            // Validate file type first
+            if (!file.type.startsWith('audio/')) {
+                resolve({
+                    success: false,
+                    error: `Invalid file type: ${file.type}. Expected audio file.`,
+                    fileSize: file.size
+                });
+                return;
+            }
+
+            const audio = new Audio();
+            const objectUrl = URL.createObjectURL(file);
+            let timeoutId;
+            
+            const cleanup = () => {
+                URL.revokeObjectURL(objectUrl);
+                audio.remove();
+                if (timeoutId) clearTimeout(timeoutId);
+            };
+            
+            const handleLoadedMetadata = () => {
+                // Validate duration
+                if (!audio.duration || audio.duration === Infinity || isNaN(audio.duration)) {
+                    cleanup();
+                    resolve({
+                        success: false,
+                        error: 'Could not determine audio duration. File may be corrupted or in unsupported format.',
+                        fileSize: file.size
+                    });
+                    return;
+                }
+                
+                const metadata = {
+                    success: true,
+                    duration: Math.floor(audio.duration),
+                    fileSize: file.size,
+                    format: file.type
+                };
+                
+                cleanup();
+                resolve(metadata);
+            };
+            
+            const handleError = (errorMsg = 'File may be corrupted or in unsupported format') => {
+                cleanup();
+                resolve({
+                    success: false,
+                    error: `Failed to load audio file: ${errorMsg}`,
+                    fileSize: file.size
+                });
+            };
+            
+            // Set up event listeners
+            audio.addEventListener('loadedmetadata', handleLoadedMetadata);
+            audio.addEventListener('error', () => handleError());
+            audio.addEventListener('abort', () => handleError('Audio loading aborted'));
+            
+            // Set up timeout (15 seconds max)
+            timeoutId = setTimeout(() => {
+                handleError('Timeout: Audio analysis took too long');
+            }, 15000);
+            
+            // Start loading
+            audio.preload = 'metadata';
+            audio.src = objectUrl;
+        });
+    }
+
+    function formatDuration(seconds) {
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        
+        if (hours > 0) {
+            return `${hours}h ${minutes}m ${secs}s`;
+        } else if (minutes > 0) {
+            return `${minutes}m ${secs}s`;
+        } else {
+            return `${secs}s`;
+        }
+    }
+
     // Drag and drop handlers
     uploadZone.addEventListener('dragover', function(e) {
         e.preventDefault();
@@ -231,7 +316,7 @@ document.addEventListener('DOMContentLoaded', function() {
         handleFiles(files);
     });
 
-    function handleFiles(files) {
+    async function handleFiles(files) {
         // Filter for audio files
         const audioFiles = files.filter(file => 
             file.type.startsWith('audio/') || file.name.toLowerCase().endsWith('.mp3')
@@ -246,17 +331,86 @@ document.addEventListener('DOMContentLoaded', function() {
             alert(`Only ${audioFiles.length} of ${files.length} files are valid audio files.`);
         }
 
-        // Add to upload queue
+        // Initialize upload queue with metadata extraction
         uploadQueue = audioFiles.map(file => ({
             file: file,
-            status: 'pending',
+            status: 'analyzing',  // Start with analyzing status
             progress: 0,
             trackInfo: null,
-            error: null
+            error: null,
+            metadata: null
         }));
 
         showProgressContainer();
+        
+        // Extract metadata for all files first
+        console.log('🎵 Starting metadata extraction for', audioFiles.length, 'files...');
+        await extractAllMetadata();
+        
+        // Then start uploads
         startUploads();
+    }
+
+    async function extractAllMetadata() {
+        for (let index = 0; index < uploadQueue.length; index++) {
+            const item = uploadQueue[index];
+            const statusElement = document.getElementById(`status-${index}`);
+            const progressBar = document.getElementById(`progress-${index}`);
+            
+            try {
+                statusElement.textContent = 'Analyzing audio metadata...';
+                progressBar.style.width = '10%';
+                
+                console.log(`📊 Extracting metadata for: ${item.file.name}`);
+                const metadata = await extractAudioMetadata(item.file);
+                
+                if (metadata.success) {
+                    item.metadata = metadata;
+                    item.status = 'pending';  // Ready for upload
+                    progressBar.style.width = '20%';
+                    statusElement.innerHTML = `
+                        <div class="text-sm">
+                            ✅ Duration: ${formatDuration(metadata.duration)} • Size: ${(metadata.fileSize / 1024 / 1024).toFixed(2)} MB
+                            <br><span class="text-gray-500">Ready for upload...</span>
+                        </div>
+                    `;
+                    console.log(`✅ Metadata extracted for ${item.file.name}: ${metadata.duration}s, ${(metadata.fileSize / 1024 / 1024).toFixed(2)}MB`);
+                } else {
+                    item.status = 'error';
+                    item.error = `Metadata extraction failed: ${metadata.error}`;
+                    statusElement.innerHTML = `<div class="text-red-600">❌ ${metadata.error}</div>`;
+                    console.warn(`❌ Metadata extraction failed for ${item.file.name}: ${metadata.error}`);
+                    
+                    // Mark the upload item as error
+                    const uploadItem = document.getElementById(`upload-${index}`);
+                    uploadItem.classList.add('error');
+                }
+            } catch (error) {
+                console.error(`💥 Error during metadata extraction for ${item.file.name}:`, error);
+                item.status = 'error';
+                item.error = `Metadata extraction error: ${error.message}`;
+                statusElement.innerHTML = `<div class="text-red-600">❌ ${error.message}</div>`;
+                
+                // Mark the upload item as error
+                const uploadItem = document.getElementById(`upload-${index}`);
+                uploadItem.classList.add('error');
+            }
+        }
+        
+        const successfulAnalysis = uploadQueue.filter(item => item.status === 'pending').length;
+        const failedAnalysis = uploadQueue.filter(item => item.status === 'error').length;
+        
+        console.log(`🎵 Metadata extraction complete: ${successfulAnalysis} successful, ${failedAnalysis} failed`);
+        
+        if (successfulAnalysis === 0) {
+            alert('No files could be analyzed for upload. Please check the file formats and try again.');
+            return;
+        } else if (failedAnalysis > 0) {
+            const proceed = confirm(`${failedAnalysis} file(s) failed metadata extraction and will be skipped. Continue with ${successfulAnalysis} files?`);
+            if (!proceed) {
+                return;
+            }
+        }
     }
 
     function showProgressContainer() {
@@ -428,6 +582,26 @@ document.addEventListener('DOMContentLoaded', function() {
         progressBar.style.width = '100%';
         status.textContent = 'Creating track record...';
 
+        // Prepare metadata for Django
+        const metadata = item.metadata || {};
+        const trackData = {
+            s3_key: uploadData.s3_key,
+            upload_id: uploadData.upload_id,
+            track_info: uploadData.track_info,
+            file_size: item.file.size,
+            // Include client-computed duration and metadata
+            client_duration_seconds: metadata.duration || null,
+            client_metadata: {
+                success: metadata.success || false,
+                duration: metadata.duration || null,
+                fileSize: metadata.fileSize || item.file.size,
+                format: metadata.format || null,
+                extractedAt: new Date().toISOString()
+            }
+        };
+
+        console.log(`🚀 Sending track data to Django:`, trackData);
+
         // Notify Django to create the Track record
         fetch(`{% url 'retreats:complete_s3_upload' session.id %}`, {
             method: 'POST',
@@ -435,12 +609,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 'Content-Type': 'application/json',
                 'X-CSRFToken': getCookie('csrftoken')
             },
-            body: JSON.stringify({
-                s3_key: uploadData.s3_key,
-                upload_id: uploadData.upload_id,
-                track_info: uploadData.track_info,
-                file_size: item.file.size
-            })
+            body: JSON.stringify(trackData)
         })
         .then(response => response.json())
         .then(response => {
@@ -449,11 +618,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 item.trackInfo = response.track;
                 uploadItem.classList.add('success');
                 
+                const durationText = metadata.duration ? ` • ${formatDuration(metadata.duration)}` : '';
                 status.innerHTML = `
                     <div class="track-info">
                         ✅ Track ${response.track.track_number}: ${response.track.title}<br>
                         <small style="color: #666;">
-                            ${response.track.file_size_mb} MB • Direct S3 upload
+                            ${response.track.file_size_mb} MB${durationText} • Client-computed metadata
                             ${response.track.s3_url ? ' • <a href="' + response.track.s3_url + '" target="_blank">View in S3</a>' : ''}
                         </small>
                     </div>

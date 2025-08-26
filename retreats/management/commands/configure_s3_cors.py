@@ -46,15 +46,19 @@ class Command(BaseCommand):
                         'http://127.0.0.1:8000',
                         '*'  # Allow all origins for React Native compatibility
                     ],
-                    'AllowedMethods': ['GET', 'HEAD'],  # Only need GET/HEAD for presigned URLs
+                    'AllowedMethods': ['GET', 'HEAD', 'POST'],  # GET/HEAD for downloads, POST for direct uploads
                     'AllowedHeaders': [
                         'Authorization',
                         'Range',  # Critical for audio streaming
                         'Content-Type',
+                        'Content-Disposition',  # Required for file uploads
+                        'Content-Encoding',
                         'Accept',
                         'Origin',
                         'User-Agent',
-                        'Cache-Control'
+                        'Cache-Control',
+                        'x-amz-*',  # AWS specific headers for uploads
+                        '*'  # Allow all headers for maximum compatibility
                     ],
                     'ExposeHeaders': [
                         'Content-Range',
