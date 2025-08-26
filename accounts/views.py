@@ -11,7 +11,7 @@ import time
 from django.contrib.auth import get_user_model
 import logging
 
-from .models import MagicLinkToken, DeviceActivation, UserApprovalRequest
+from .models import MagicLinkToken, DeviceActivation, UserApprovalRequest, AutoActivationToken
 from .serializers import (
     EmailRequestSerializer, 
     UserApprovalRequestSerializer, 
@@ -207,6 +207,14 @@ def activate_device(request, token):
             device_activation.is_active = True
             device_activation.save()
         
+        # Generate auto-activation token for seamless web app access
+        auto_token = AutoActivationToken.objects.create(
+            user=magic_token.user,
+            original_device_fingerprint=magic_token.device_fingerprint,
+            original_ip=get_client_ip(request),
+            original_user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+        
         # Prepare response data
         user_name = magic_token.user.get_full_name() or magic_token.user.email
         device_name = device_activation.device_name or 'This Device'
@@ -226,7 +234,8 @@ def activate_device(request, token):
                 'device_name': device_name,
                 'frontend_url': settings.FRONTEND_URL,
                 'detected_language': detected_language,
-                'timestamp': int(time.time())
+                'timestamp': int(time.time()),
+                'auto_activation_token': auto_token.token
             })
         else:
             # Return JSON for API requests
@@ -508,3 +517,101 @@ def send_admin_approval_notification(approval_request):
         
     except Exception as e:
         logger.error(f"Failed to send admin approval notification: {e}")
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def auto_activate_device(request):
+    """
+    Auto-activate a device using a short-lived auto-activation token
+    """
+    token_value = request.data.get('token', '')
+    device_fingerprint = request.data.get('device_fingerprint', '')
+    device_name = request.data.get('device_name', '')
+    device_type = request.data.get('device_type', 'web')
+    
+    if not token_value:
+        return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        # Find the auto-activation token
+        auto_token = AutoActivationToken.objects.get(token=token_value)
+        
+        # Check if token is valid
+        if not auto_token.is_valid:
+            return Response({
+                'error': 'Token is invalid or expired',
+                'status': 'token_invalid'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Security check: ensure request comes from same IP
+        request_ip = get_client_ip(request)
+        if not auto_token.is_ip_match(request_ip):
+            logger.warning(f"Auto-activation IP mismatch: original={auto_token.original_ip}, request={request_ip}")
+            return Response({
+                'error': 'Security validation failed',
+                'status': 'security_failed'
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Use the token (marks it as used)
+        auto_token.use_token(
+            ip_address=request_ip,
+            device_fingerprint=device_fingerprint,
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+        
+        # Create or update device activation
+        device_activation, created = DeviceActivation.objects.get_or_create(
+            device_fingerprint=device_fingerprint,
+            defaults={
+                'user': auto_token.user,
+                'device_name': device_name,
+                'device_type': device_type,
+                'ip_address': request_ip,
+                'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+                'is_active': True
+            }
+        )
+        
+        if not created:
+            # Reactivate existing device for this user
+            device_activation.user = auto_token.user
+            device_activation.is_active = True
+            device_activation.save()
+        
+        # Generate tokens for the user
+        refresh = RefreshToken.for_user(auto_token.user)
+        
+        logger.info(f"Auto-activation successful for {auto_token.user.email} on {device_name}")
+        
+        return Response({
+            'status': 'device_activated',
+            'message': 'Device automatically activated',
+            'access_token': str(refresh.access_token),
+            'refresh_token': str(refresh),
+            'user': {
+                'id': auto_token.user.id,
+                'email': auto_token.user.email,
+                'name': auto_token.user.get_full_name() or auto_token.user.email,
+                'dharma_name': auto_token.user.dharma_name
+            },
+            'device_activation': {
+                'id': str(device_activation.id),
+                'device_name': device_activation.device_name,
+                'device_type': device_activation.device_type,
+                'activated_at': device_activation.activated_at.isoformat(),
+            }
+        })
+        
+    except AutoActivationToken.DoesNotExist:
+        return Response({
+            'error': 'Token not found',
+            'status': 'token_not_found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    except Exception as e:
+        logger.error(f"Auto-activation error: {e}")
+        return Response({
+            'error': 'Internal server error',
+            'status': 'server_error'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

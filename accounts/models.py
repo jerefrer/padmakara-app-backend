@@ -446,3 +446,74 @@ class UserApprovalRequest(models.Model):
         self.reviewed_at = timezone.now()
         self.reviewed_by = admin_user
         self.save(update_fields=['status', 'admin_message', 'reviewed_at', 'reviewed_by'])
+
+
+class AutoActivationToken(models.Model):
+    """
+    Short-lived tokens for seamless auto-activation across devices
+    """
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='auto_activation_tokens')
+    token = models.CharField(_('Token'), max_length=64, unique=True)
+    
+    # Original activation details
+    original_device_fingerprint = models.CharField(_('Original Device Fingerprint'), max_length=255)
+    original_ip = models.GenericIPAddressField(_('Original IP Address'))
+    original_user_agent = models.TextField(_('Original User Agent'), blank=True)
+    
+    # Token status
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    expires_at = models.DateTimeField(_('Expires At'))
+    used_at = models.DateTimeField(_('Used At'), null=True, blank=True)
+    is_used = models.BooleanField(_('Is Used'), default=False)
+    
+    # Usage details (populated when token is used)
+    used_ip = models.GenericIPAddressField(_('Used IP Address'), null=True, blank=True)
+    used_device_fingerprint = models.CharField(_('Used Device Fingerprint'), max_length=255, blank=True)
+    used_user_agent = models.TextField(_('Used User Agent'), blank=True)
+    
+    class Meta:
+        verbose_name = _('Auto Activation Token')
+        verbose_name_plural = _('Auto Activation Tokens')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def __str__(self):
+        return f"Auto-activation token for {self.user.email} - {self.created_at}"
+
+    def save(self, *args, **kwargs):
+        if not self.token:
+            self.token = secrets.token_urlsafe(32)
+        if not self.expires_at:
+            # Token expires in 10 minutes
+            self.expires_at = timezone.now() + timezone.timedelta(minutes=10)
+        super().save(*args, **kwargs)
+
+    @property
+    def is_valid(self):
+        """Check if token is valid (not used and not expired)"""
+        return (
+            not self.is_used 
+            and self.expires_at > timezone.now()
+        )
+    
+    def use_token(self, ip_address=None, device_fingerprint=None, user_agent=None):
+        """Mark token as used and record usage details"""
+        if not self.is_valid:
+            raise ValueError("Token is not valid")
+        
+        self.is_used = True
+        self.used_at = timezone.now()
+        self.used_ip = ip_address
+        self.used_device_fingerprint = device_fingerprint or ''
+        self.used_user_agent = user_agent or ''
+        self.save(update_fields=['is_used', 'used_at', 'used_ip', 'used_device_fingerprint', 'used_user_agent'])
+    
+    def is_ip_match(self, request_ip):
+        """Check if the request IP matches the original IP (for security)"""
+        return self.original_ip == request_ip

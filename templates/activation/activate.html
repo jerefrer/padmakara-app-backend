@@ -668,10 +668,18 @@
         };
 
         window.openWebApp = function () {
-          window.open(
-            '{{ frontend_url|default:"https://app.padmakara.pt" }}',
-            "_blank"
-          );
+          // Build URL with auto-activation token for seamless login
+          const frontendUrl = '{{ frontend_url|default:"https://app.padmakara.pt" }}';
+          const autoToken = '{{ auto_activation_token|default:"" }}';
+          
+          let url = frontendUrl;
+          if (autoToken) {
+            // Add auto-activation token as URL parameter
+            const separator = frontendUrl.includes('?') ? '&' : '?';
+            url = `${frontendUrl}${separator}auto_activate=${encodeURIComponent(autoToken)}`;
+          }
+          
+          window.open(url, "_blank");
         };
 
         // Language switching functions
