@@ -16,7 +16,14 @@ urlpatterns = [
     
     # API endpoints
     path('user-retreats/', views.user_retreats, name='user_retreats'),
-    path('retreats/<int:retreat_id>/', views.retreat_details, name='retreat_details'),
+    path('<int:retreat_id>/', views.retreat_details, name='retreat_details'),
     path('sessions/<int:session_id>/', views.session_details, name='session_details'),
     path('presigned-url/<int:track_id>/', views.track_presigned_url, name='track_presigned_url'),
+    
+    # Download ZIP endpoints
+    path('<int:retreat_id>/request-download/', views.request_retreat_download, name='request_retreat_download'),
+    path('download-requests/<int:request_id>/status/', views.download_request_status, name='download_request_status'),
+    path('download-requests/<int:request_id>/download/', views.download_file, name='download_file'),
+    path('download-requests/<int:request_id>/extend-lifecycle/', views.extend_zip_lifecycle, name='extend_zip_lifecycle'),
+    path('download-webhook/', views.download_webhook, name='download_webhook'),
 ]

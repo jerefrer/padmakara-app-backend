@@ -1,3 +1,4 @@
+import logging
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -8,6 +9,7 @@ from django.dispatch import receiver
 from utils.storage import retreat_audio_upload_path, retreat_transcript_upload_path, retreat_image_upload_path, RetreatMediaStorage
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class Place(models.Model):
@@ -580,6 +582,281 @@ class RetreatParticipation(models.Model):
     def is_active(self):
         """Check if participation is active"""
         return self.status in ['registered', 'confirmed', 'attended']
+
+
+class DownloadRequest(models.Model):
+    """
+    Tracks ZIP file generation requests for retreat downloads
+    """
+    
+    STATUS_CHOICES = [
+        ('pending', _('Pending')),
+        ('processing', _('Processing')),
+        ('ready', _('Ready')),
+        ('failed', _('Failed')),
+        ('expired', _('Expired')),
+    ]
+    
+    # Core fields
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='download_requests')
+    retreat = models.ForeignKey(Retreat, on_delete=models.CASCADE, related_name='download_requests')
+    
+    # Status tracking
+    status = models.CharField(_('Status'), max_length=20, choices=STATUS_CHOICES, default='pending')
+    
+    # File information
+    file_size = models.PositiveBigIntegerField(_('File Size (bytes)'), null=True, blank=True)
+    download_url = models.URLField(_('Download URL'), max_length=1000, null=True, blank=True)
+    s3_key = models.CharField(_('S3 Key'), max_length=500, null=True, blank=True)
+    
+    # Error handling
+    error_message = models.TextField(_('Error Message'), blank=True)
+    retry_count = models.PositiveSmallIntegerField(_('Retry Count'), default=0)
+    
+    # Timestamps
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+    expires_at = models.DateTimeField(_('Expires At'), null=True, blank=True)
+    
+    # Processing metadata
+    lambda_request_id = models.CharField(_('Lambda Request ID'), max_length=100, null=True, blank=True)
+    processing_started_at = models.DateTimeField(_('Processing Started At'), null=True, blank=True)
+    processing_completed_at = models.DateTimeField(_('Processing Completed At'), null=True, blank=True)
+    
+    # ZIP sharing metadata
+    is_shared = models.BooleanField(_('Is Shared ZIP'), default=False, help_text=_('Whether this ZIP is shared among multiple users'))
+    shared_zip_key = models.CharField(_('Shared ZIP Key'), max_length=500, null=True, blank=True, help_text=_('S3 key for shared ZIP file'))
+    download_count = models.PositiveIntegerField(_('Download Count'), default=0, help_text=_('Number of times this ZIP has been downloaded'))
+    last_accessed_at = models.DateTimeField(_('Last Accessed At'), null=True, blank=True, help_text=_('When this ZIP was last downloaded'))
+    popularity_score = models.FloatField(_('Popularity Score'), default=0.0, help_text=_('Calculated popularity for lifecycle decisions'))
+
+    class Meta:
+        verbose_name = _('Download Request')
+        verbose_name_plural = _('Download Requests')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'status']),
+            models.Index(fields=['retreat', 'status']),
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['expires_at']),
+            # Sharing-related indexes
+            models.Index(fields=['retreat', 'is_shared', 'status'], name='ret_dl_sharing_lookup'),
+            models.Index(fields=['shared_zip_key'], name='ret_dl_shared_key'),
+            models.Index(fields=['last_accessed_at'], name='ret_dl_last_accessed'),
+            models.Index(fields=['popularity_score', 'retreat'], name='ret_dl_popularity'),
+        ]
+
+    def __str__(self):
+        return f"Download {self.retreat.name} by {self.user.email} - {self.get_status_display()}"
+
+    def save(self, *args, **kwargs):
+        # Set expiration time when creating request
+        if not self.expires_at and self.status == 'pending':
+            from datetime import timedelta
+            self.expires_at = timezone.now() + timedelta(hours=48)
+            
+        # Update processing timestamps
+        if self.pk:  # Existing object
+            old_instance = DownloadRequest.objects.get(pk=self.pk)
+            if old_instance.status != self.status:
+                if self.status == 'processing' and not self.processing_started_at:
+                    self.processing_started_at = timezone.now()
+                elif self.status in ['ready', 'failed'] and not self.processing_completed_at:
+                    self.processing_completed_at = timezone.now()
+                    
+        super().save(*args, **kwargs)
+
+    @property
+    def is_expired(self):
+        """Check if download request has expired"""
+        return self.expires_at and timezone.now() > self.expires_at
+
+    @property
+    def file_size_mb(self):
+        """Get file size in MB"""
+        if self.file_size:
+            return round(self.file_size / (1024 * 1024), 2)
+        return None
+
+    @property
+    def processing_duration(self):
+        """Get processing duration in seconds"""
+        if self.processing_started_at and self.processing_completed_at:
+            return (self.processing_completed_at - self.processing_started_at).total_seconds()
+        return None
+
+    @property
+    def time_until_expiry(self):
+        """Get time until expiration"""
+        if self.expires_at:
+            remaining = self.expires_at - timezone.now()
+            if remaining.total_seconds() > 0:
+                return remaining
+        return None
+
+    def mark_as_processing(self, lambda_request_id=None):
+        """Mark request as processing"""
+        self.status = 'processing'
+        self.processing_started_at = timezone.now()
+        if lambda_request_id:
+            self.lambda_request_id = lambda_request_id
+        self.save(update_fields=['status', 'processing_started_at', 'lambda_request_id'])
+
+    def mark_as_ready(self, download_url, s3_key, file_size):
+        """Mark request as ready for download"""
+        self.status = 'ready'
+        self.download_url = download_url
+        self.s3_key = s3_key
+        self.file_size = file_size
+        self.processing_completed_at = timezone.now()
+        self.save(update_fields=[
+            'status', 'download_url', 's3_key', 'file_size', 'processing_completed_at'
+        ])
+
+    def mark_as_failed(self, error_message):
+        """Mark request as failed"""
+        self.status = 'failed'
+        self.error_message = error_message
+        self.processing_completed_at = timezone.now()
+        self.retry_count += 1
+        self.save(update_fields=[
+            'status', 'error_message', 'processing_completed_at', 'retry_count'
+        ])
+
+    def can_retry(self, max_retries=3):
+        """Check if request can be retried"""
+        return self.status == 'failed' and self.retry_count < max_retries and not self.is_expired
+
+    # ==============================================================================
+    # ZIP Sharing Methods
+    # ==============================================================================
+
+    @classmethod
+    def find_existing_shared_zip(cls, retreat):
+        """Find an existing valid shared ZIP for this retreat"""
+        return cls.objects.filter(
+            retreat=retreat,
+            is_shared=True,
+            status='ready',
+            expires_at__gt=timezone.now()
+        ).order_by('-last_accessed_at').first()
+
+    @classmethod
+    def create_shared_zip_request(cls, user, retreat, existing_zip=None):
+        """Create a new download request that shares an existing ZIP or creates a new shared ZIP"""
+        if existing_zip:
+            # Create request that points to existing shared ZIP
+            new_request = cls.objects.create(
+                user=user,
+                retreat=retreat,
+                is_shared=True,
+                shared_zip_key=existing_zip.shared_zip_key,
+                status='ready',
+                file_size=existing_zip.file_size,
+                download_url=existing_zip.download_url,
+                s3_key=existing_zip.s3_key,
+                expires_at=existing_zip.expires_at
+            )
+            
+            # Extend lifecycle of the shared ZIP
+            existing_zip.extend_lifecycle()
+            logger.info(f"Created shared download request {new_request.id} using existing ZIP {existing_zip.shared_zip_key}")
+            return new_request
+        else:
+            # Create request for new shared ZIP
+            new_request = cls.objects.create(
+                user=user,
+                retreat=retreat,
+                is_shared=True
+            )
+            logger.info(f"Created new shared ZIP request {new_request.id} for retreat {retreat.id}")
+            return new_request
+
+    def extend_lifecycle(self, days=2):
+        """Extend the lifecycle of this ZIP by specified days"""
+        if not self.expires_at:
+            self.expires_at = timezone.now() + timezone.timedelta(days=days)
+        else:
+            # Extend but cap at maximum of 14 days from now
+            max_expiry = timezone.now() + timezone.timedelta(days=14)
+            new_expiry = self.expires_at + timezone.timedelta(days=days)
+            self.expires_at = min(new_expiry, max_expiry)
+        
+        self.save(update_fields=['expires_at'])
+        logger.info(f"Extended lifecycle for download request {self.id} to {self.expires_at}")
+
+    def record_download(self):
+        """Record a download event and update popularity metrics"""
+        self.download_count += 1
+        self.last_accessed_at = timezone.now()
+        
+        # Calculate popularity score based on downloads and recency
+        hours_since_creation = (timezone.now() - self.created_at).total_seconds() / 3600
+        self.popularity_score = self.download_count / max(hours_since_creation, 1.0)
+        
+        self.save(update_fields=['download_count', 'last_accessed_at', 'popularity_score'])
+        
+        # Auto-extend lifecycle for popular ZIPs
+        if self.download_count >= 3:  # Popular threshold
+            self.extend_lifecycle(days=3)
+        elif self.download_count >= 5:  # Very popular
+            self.extend_lifecycle(days=5)
+            
+        logger.info(f"Recorded download for request {self.id} (count: {self.download_count}, popularity: {self.popularity_score:.2f})")
+
+    def update_shared_zip_info(self, s3_key, download_url, file_size):
+        """Update shared ZIP information when Lambda completes"""
+        self.shared_zip_key = s3_key
+        self.s3_key = s3_key
+        self.download_url = download_url
+        self.file_size = file_size
+        self.save(update_fields=['shared_zip_key', 's3_key', 'download_url', 'file_size'])
+        
+        # Update all other requests waiting for this shared ZIP
+        cls = self.__class__
+        waiting_requests = cls.objects.filter(
+            retreat=self.retreat,
+            is_shared=True,
+            status__in=['pending', 'processing'],
+            shared_zip_key__isnull=True
+        ).exclude(id=self.id)
+        
+        for request in waiting_requests:
+            request.shared_zip_key = s3_key
+            request.s3_key = s3_key
+            request.download_url = download_url
+            request.file_size = file_size
+            request.status = 'ready'
+            request.processing_completed_at = timezone.now()
+            request.save(update_fields=[
+                'shared_zip_key', 's3_key', 'download_url', 'file_size', 
+                'status', 'processing_completed_at'
+            ])
+            
+        logger.info(f"Updated {len(waiting_requests)} waiting requests with shared ZIP info")
+
+    @classmethod
+    def cleanup_expired(cls):
+        """Clean up expired download requests"""
+        expired_requests = cls.objects.filter(
+            expires_at__lt=timezone.now()
+        ).exclude(status='expired')
+        
+        for request in expired_requests:
+            # Clean up S3 file if it exists
+            if request.s3_key:
+                try:
+                    from utils.storage import RetreatMediaStorage
+                    storage = RetreatMediaStorage()
+                    storage.delete(request.s3_key)
+                except Exception as e:
+                    logger.error(f"Error cleaning up expired download file {request.s3_key}: {e}")
+            
+            # Mark as expired
+            request.status = 'expired'
+            request.save(update_fields=['status'])
+        
+        return expired_requests.count()
 
 
 # Signal handlers for bulk deletions

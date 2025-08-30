@@ -32,6 +32,9 @@ redis==5.2.1
 python-decouple==3.8
 dj-database-url==2.2.0
 
+# HTTP Requests
+requests==2.32.3
+
 # Cache
 django-redis==5.4.0
 

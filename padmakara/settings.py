@@ -179,6 +179,11 @@ if USE_S3_FOR_MEDIA:
     DEFAULT_FILE_STORAGE = 'utils.storage.RetreatMediaStorage'
     MEDIA_URL = f'https://{AWS_S3_CUSTOM_DOMAIN}/'
 
+# Lambda and ZIP Download Configuration
+SITE_URL = config('SITE_URL', default='http://localhost:8000')
+AWS_LAMBDA_FUNCTION_NAME = config('AWS_LAMBDA_FUNCTION_NAME', default='padmakara-zip-generator')
+TEMP_S3_BUCKET = config('TEMP_S3_BUCKET', default='padmakara-pt-temp-downloads')
+
 # Always use local serving for static files (CSS, JS, admin assets)
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
@@ -234,7 +239,9 @@ CORS_ALLOWED_ORIGINS = [
 
 CORS_ALLOW_CREDENTIALS = True
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG  # Only in development
+# React Native apps don't send Origin headers like web browsers
+# Allow all origins for mobile app requests
+CORS_ALLOW_ALL_ORIGINS = True  # Required for React Native mobile apps
 
 # Email Configuration
 if DEBUG:
@@ -269,24 +276,36 @@ CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE
 
 # Cache Configuration
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://localhost:6379/1'),
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+REDIS_URL = config('REDIS_URL', default=None)
+
+if REDIS_URL and not DEBUG:
+    # Use Redis if available and not in debug mode
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {
+                'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+            }
         }
     }
-} if not DEBUG else {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+    # Use Redis for sessions if available
+    SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+    SESSION_CACHE_ALIAS = 'default'
+else:
+    # Fallback to database-backed cache and sessions
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.db.DatabaseCache',
+            'LOCATION': 'cache_table',
+        }
     }
-}
+    # Use database sessions (more reliable without Redis)
+    SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 
-# Session Configuration
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
 SESSION_COOKIE_AGE = 86400  # 24 hours
+SESSION_SAVE_EVERY_REQUEST = True
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 
 # Logging Configuration
 LOGGING = {
