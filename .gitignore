@@ -34,6 +34,7 @@ staticfiles/
 media/
 local_settings.py
 db.sqlite3
+db.sqlite3.*
 
 # Unit test / coverage
 .coverage
@@ -69,3 +70,6 @@ celerybeat-schedule
 # Misc
 .ropeproject
 *.sqlite3
+
+fixtures/
+dumps/

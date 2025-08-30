@@ -94,7 +94,7 @@ WSGI_APPLICATION = 'padmakara.wsgi.application'
 
 DATABASE_URL = config('DATABASE_URL', default='sqlite:///db.sqlite3')
 
-if DATABASE_URL.startswith('postgres://'):
+if DATABASE_URL.startswith(('postgres://', 'postgresql://')):
     # Parse PostgreSQL URL
     import dj_database_url
     DATABASES = {

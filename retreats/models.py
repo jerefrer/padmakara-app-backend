@@ -381,9 +381,9 @@ class Track(models.Model):
     language = models.CharField(_('Language'), max_length=5, choices=LANGUAGE_CHOICES, default='en')
     
     # Files
-    audio_file = models.FileField(_('Audio File'), upload_to=retreat_audio_upload_path, storage=RetreatMediaStorage(), null=True, blank=True)
+    audio_file = models.FileField(_('Audio File'), upload_to=retreat_audio_upload_path, storage=RetreatMediaStorage(), max_length=500, null=True, blank=True)
     transcript_file = models.FileField(_('Transcript (PDF)'), upload_to=retreat_transcript_upload_path, 
-                                     storage=RetreatMediaStorage(), null=True, blank=True)
+                                     storage=RetreatMediaStorage(), max_length=500, null=True, blank=True)
     
     # Metadata
     duration_minutes = models.PositiveIntegerField(_('Duration (minutes)'), default=0)
