@@ -73,3 +73,5 @@ celerybeat-schedule
 
 fixtures/
 dumps/
+
+.serena
