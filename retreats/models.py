@@ -606,7 +606,7 @@ class DownloadRequest(models.Model):
     
     # File information
     file_size = models.PositiveBigIntegerField(_('File Size (bytes)'), null=True, blank=True)
-    download_url = models.URLField(_('Download URL'), max_length=1000, null=True, blank=True)
+    download_url = models.URLField(_('Download URL'), max_length=5000, null=True, blank=True)
     s3_key = models.CharField(_('S3 Key'), max_length=500, null=True, blank=True)
     
     # Error handling
@@ -629,6 +629,15 @@ class DownloadRequest(models.Model):
     download_count = models.PositiveIntegerField(_('Download Count'), default=0, help_text=_('Number of times this ZIP has been downloaded'))
     last_accessed_at = models.DateTimeField(_('Last Accessed At'), null=True, blank=True, help_text=_('When this ZIP was last downloaded'))
     popularity_score = models.FloatField(_('Popularity Score'), default=0.0, help_text=_('Calculated popularity for lifecycle decisions'))
+    
+    # Performance tracking fields
+    total_files = models.PositiveIntegerField(_('Total Files'), null=True, blank=True, help_text=_('Total number of files to process'))
+    processed_files = models.PositiveIntegerField(_('Processed Files'), default=0, help_text=_('Number of files processed so far'))
+    progress_percent = models.PositiveSmallIntegerField(_('Progress Percentage'), default=0, help_text=_('Processing progress percentage (0-100)'))
+    original_size = models.PositiveBigIntegerField(_('Original Size (bytes)'), null=True, blank=True, help_text=_('Total size of original files before compression'))
+    compression_ratio = models.FloatField(_('Compression Ratio'), null=True, blank=True, help_text=_('Compression ratio percentage'))
+    processing_time_seconds = models.FloatField(_('Processing Time (seconds)'), null=True, blank=True, help_text=_('Total processing time in seconds'))
+    performance_metrics = models.JSONField(_('Performance Metrics'), null=True, blank=True, help_text=_('Detailed performance breakdown (download_time, zip_time, upload_time)'))
 
     class Meta:
         verbose_name = _('Download Request')

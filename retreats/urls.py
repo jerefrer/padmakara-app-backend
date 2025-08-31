@@ -26,4 +26,5 @@ urlpatterns = [
     path('download-requests/<int:request_id>/download/', views.download_file, name='download_file'),
     path('download-requests/<int:request_id>/extend-lifecycle/', views.extend_zip_lifecycle, name='extend_zip_lifecycle'),
     path('download-webhook/', views.download_webhook, name='download_webhook'),
+    path('debug-downloads/', views.debug_download_requests, name='debug_download_requests'),
 ]

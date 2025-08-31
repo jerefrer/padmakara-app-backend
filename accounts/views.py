@@ -615,3 +615,33 @@ def auto_activate_device(request):
             'error': 'Internal server error',
             'status': 'server_error'
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def user_profile(request):
+    """
+    Simple user profile endpoint for API testing and basic user info
+    """
+    try:
+        user = request.user
+        return Response({
+            'success': True,
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'dharma_name': getattr(user, 'dharma_name', ''),
+                'is_active': user.is_active,
+                'date_joined': user.date_joined.isoformat(),
+            }
+        }, status=status.HTTP_200_OK)
+    
+    except Exception as e:
+        logger.error(f"User profile error: {e}")
+        return Response({
+            'error': 'Failed to get user profile',
+            'success': False
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

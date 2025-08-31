@@ -14,4 +14,7 @@ urlpatterns = [
     path('auth/device/discover/', views.discover_device_activation, name='discover_device_activation'),
     path('auth/device/deactivate/', views.deactivate_device, name='deactivate_device'),
     path('auth/devices/', views.list_user_devices, name='list_user_devices'),
+    
+    # User Profile
+    path('auth/user/', views.user_profile, name='user_profile'),
 ]
