@@ -26,6 +26,101 @@ from utils.track_parser import parse_track_filename, validate_audio_file, get_fi
 logger = logging.getLogger(__name__)
 
 
+def check_s3_file_exists(s3_key, bucket_name=None):
+    """
+    Validate if an S3 file exists and is accessible.
+    
+    Args:
+        s3_key (str): The S3 key/path to check
+        bucket_name (str): S3 bucket name (defaults to temp downloads bucket)
+        
+    Returns:
+        dict: {
+            'exists': bool,
+            'accessible': bool, 
+            'error': str or None,
+            'file_size': int or None
+        }
+    """
+    import boto3
+    from botocore.exceptions import ClientError, NoCredentialsError
+    from django.conf import settings
+    
+    # Default to temp downloads bucket
+    if not bucket_name:
+        bucket_name = 'padmakara-pt-temp-downloads'
+    
+    try:
+        # Create S3 client with explicit credentials
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=getattr(settings, 'AWS_ACCESS_KEY_ID', None),
+            aws_secret_access_key=getattr(settings, 'AWS_SECRET_ACCESS_KEY', None),
+            region_name=getattr(settings, 'AWS_S3_REGION_NAME', 'eu-west-3')
+        )
+        
+        # Check if file exists by getting object metadata
+        response = s3_client.head_object(Bucket=bucket_name, Key=s3_key)
+        
+        logger.info(f"S3 file validation successful: {s3_key} ({response.get('ContentLength', 0)} bytes)")
+        
+        return {
+            'exists': True,
+            'accessible': True,
+            'error': None,
+            'file_size': response.get('ContentLength', 0)
+        }
+        
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        
+        if error_code == '404':
+            # File doesn't exist
+            logger.warning(f"S3 file not found: {s3_key} in bucket {bucket_name}")
+            return {
+                'exists': False,
+                'accessible': False,
+                'error': 'File not found',
+                'file_size': None
+            }
+        elif error_code == '403':
+            # Permission denied
+            logger.error(f"S3 access denied: {s3_key} in bucket {bucket_name}")
+            return {
+                'exists': True,  # File exists but not accessible
+                'accessible': False,
+                'error': 'Access denied',
+                'file_size': None
+            }
+        else:
+            # Other S3 error
+            logger.error(f"S3 error checking {s3_key}: {error_code} - {e}")
+            return {
+                'exists': False,
+                'accessible': False,
+                'error': f"S3 error: {error_code}",
+                'file_size': None
+            }
+    
+    except NoCredentialsError:
+        logger.error(f"AWS credentials not available for S3 validation")
+        return {
+            'exists': False,
+            'accessible': False,
+            'error': 'AWS credentials not configured',
+            'file_size': None
+        }
+    
+    except Exception as e:
+        logger.error(f"Unexpected error validating S3 file {s3_key}: {str(e)}")
+        return {
+            'exists': False,
+            'accessible': False,
+            'error': f"Validation error: {str(e)}",
+            'file_size': None
+        }
+
+
 @staff_member_required
 def bulk_upload_tracks_view(request, session_id):
     """
@@ -1136,6 +1231,63 @@ def download_file(request, request_id):
                 {'error': 'Download has expired'}, 
                 status=status.HTTP_410_GONE
             )
+        
+        # Validate S3 file existence before serving download URL
+        if download_request.s3_key:
+            logger.info(f"Validating S3 file existence for request {request_id}: {download_request.s3_key}")
+            
+            s3_validation = check_s3_file_exists(download_request.s3_key)
+            
+            if not s3_validation['exists'] or not s3_validation['accessible']:
+                # S3 file is missing or inaccessible - trigger auto-recovery
+                logger.warning(f"S3 file validation failed for request {request_id}: {s3_validation['error']}")
+                
+                # Mark current request as expired
+                download_request.status = 'expired'
+                download_request.error_message = f"S3 file not accessible: {s3_validation['error']}"
+                download_request.save()
+                
+                # Check if we can auto-recover by creating a new download request
+                try:
+                    logger.info(f"Auto-recovery: Creating fresh download request for retreat {download_request.retreat.id}")
+                    
+                    # Create new download request for same retreat
+                    new_download_request = DownloadRequest.create_shared_zip_request(user, download_request.retreat)
+                    
+                    # Trigger Lambda function for fresh ZIP generation
+                    if trigger_lambda_zip_generation(new_download_request):
+                        logger.info(f"Auto-recovery successful: New request {new_download_request.id} created and Lambda triggered")
+                        
+                        # Return response indicating file is being regenerated
+                        return Response({
+                            'success': False,
+                            'regenerating': True,
+                            'new_request_id': new_download_request.id,
+                            'message': 'File was missing and is being regenerated. Please check again in 30-60 seconds.',
+                            'original_request_id': request_id,
+                            'estimated_time': '30-60 seconds'
+                        }, status=status.HTTP_202_ACCEPTED)
+                    else:
+                        # Lambda trigger failed
+                        new_download_request.mark_as_failed("Failed to trigger ZIP generation")
+                        logger.error(f"Auto-recovery failed: Could not trigger Lambda for request {new_download_request.id}")
+                        
+                        return Response({
+                            'error': 'File missing and regeneration failed. Please try downloading again later.',
+                            'regeneration_failed': True,
+                            'original_error': s3_validation['error']
+                        }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+                        
+                except Exception as recovery_error:
+                    logger.error(f"Auto-recovery error for request {request_id}: {str(recovery_error)}")
+                    return Response({
+                        'error': 'File missing and auto-recovery failed. Please try downloading again.',
+                        'recovery_error': str(recovery_error),
+                        'original_error': s3_validation['error']
+                    }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+            else:
+                # S3 file exists and is accessible
+                logger.info(f"S3 file validation successful for request {request_id} ({s3_validation['file_size']} bytes)")
         
         # Use the presigned URL provided by Lambda function (already stored in download_url field)
         if not download_request.download_url:
