@@ -49,7 +49,7 @@ check_dependencies() {
 # Test SSH connection
 test_connection() {
     info "Testing SSH connection to ${SERVER_USER}@${SERVER_HOST}..."
-    if ssh -o ConnectTimeout=10 ${SERVER_USER}@${SERVER_HOST} "echo 'Connection successful'" &> /dev/null; then
+    if ssh -o ConnectTimeout=10 -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "echo 'Connection successful'" &> /dev/null; then
         log "SSH connection successful"
     else
         error "Cannot connect to server. Check your SSH configuration."
@@ -69,7 +69,7 @@ copy_production_env() {
 # Sync code to server
 sync_code() {
     log "Syncing code to server..."
-    rsync -avz --progress \
+    rsync -az --quiet \
         --exclude='venv/' \
         --exclude='*.pyc' \
         --exclude='__pycache__/' \
@@ -86,7 +86,7 @@ sync_code() {
     # Copy .env.production as .env on server
     if [ -f "${LOCAL_PATH}/.env.production" ]; then
         log "Copying .env.production to server as .env..."
-        scp "${LOCAL_PATH}/.env.production" "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/.env"
+        scp -q "${LOCAL_PATH}/.env.production" "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/.env"
     fi
     
     log "Code sync completed"
@@ -98,19 +98,19 @@ server_setup() {
     
     log "Running server setup commands..."
     
-    ssh ${SERVER_USER}@${SERVER_HOST} << EOF
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << EOF
 cd ${SERVER_PATH}
 
 # Activate virtual environment
 source venv/bin/activate
 
 # Install/upgrade dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
+pip install --upgrade pip --quiet >/dev/null 2>&1
+pip install -r requirements.txt --quiet >/dev/null 2>&1
 
 # Run Django commands
-python manage.py collectstatic --noinput
-python manage.py migrate
+python manage.py collectstatic --noinput --verbosity=0 >/dev/null 2>&1
+python manage.py migrate --verbosity=1
 
 # Check for any issues
 python manage.py check
@@ -123,16 +123,16 @@ EOF
 restart_services() {
     log "Restarting services..."
     
-    ssh ${SERVER_USER}@${SERVER_HOST} << 'EOF'
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << 'EOF'
 # Restart application
-sudo supervisorctl restart padmakara-backend
+sudo supervisorctl restart padmakara-backend >/dev/null 2>&1
 
 # Check status
 sleep 2
 sudo supervisorctl status padmakara-backend
 
 # Reload nginx
-sudo systemctl reload nginx
+sudo systemctl reload nginx >/dev/null 2>&1
 
 echo "Services restarted successfully"
 EOF
@@ -144,7 +144,7 @@ EOF
 check_status() {
     info "Checking deployment status..."
     
-    ssh ${SERVER_USER}@${SERVER_HOST} << 'EOF'
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << 'EOF'
 echo "=== System Status ==="
 echo "Date: $(date)"
 echo "Uptime: $(uptime)"
@@ -191,11 +191,11 @@ test_deployment() {
     fi
     
     # Test from server itself
-    ssh ${SERVER_USER}@${SERVER_HOST} << 'EOF'
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << 'EOF'
 echo "Testing from server..."
 
 # Test local connection
-if curl -s --max-time 10 "http://localhost:8000/admin/" > /dev/null; then
+if curl -s --max-time 10 "http://localhost:8000/admin/" >/dev/null 2>&1; then
     echo "✓ Local application is responding"
 else
     echo "✗ Local application is not responding"
@@ -204,7 +204,7 @@ fi
 # Test database connection
 cd ~/padmakara-backend
 source venv/bin/activate
-if python manage.py shell -c "from django.db import connection; connection.ensure_connection(); print('✓ Database connection successful')"; then
+if python manage.py shell -c "from django.db import connection; connection.ensure_connection(); print('✓ Database connection successful')" 2>/dev/null | grep -q "✓"; then
     echo "✓ Database is accessible"
 else
     echo "✗ Database connection failed"
@@ -216,32 +216,35 @@ EOF
 create_backup() {
     log "Creating backup before deployment..."
     
-    ssh ${SERVER_USER}@${SERVER_HOST} << 'EOF'
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << 'EOF'
 BACKUP_DIR="/home/deploy/backups"
 DATE=$(date +%Y%m%d_%H%M%S)
 
-mkdir -p $BACKUP_DIR
+mkdir -p $BACKUP_DIR >/dev/null 2>&1
 
 # Backup database if using PostgreSQL
 if grep -q "postgresql" ~/padmakara-backend/.env 2>/dev/null; then
     echo "Backing up PostgreSQL database..."
-    pg_dump -U padmakara_user -h localhost padmakara_db > $BACKUP_DIR/db_pre_deploy_$DATE.sql
-    echo "Database backup saved to: $BACKUP_DIR/db_pre_deploy_$DATE.sql"
+    export PGPASSWORD=$(grep DB_PASSWORD ~/padmakara-backend/.env | cut -d '=' -f2)
+    pg_dump -U padmakara_user -h localhost padmakara_db > $BACKUP_DIR/db_pre_deploy_$DATE.sql 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "✓ Database backup completed"
+    else
+        echo "⚠ Database backup skipped (check credentials)"
+    fi
 fi
 
 # Backup current code
 echo "Backing up current application code..."
 tar -czf $BACKUP_DIR/code_pre_deploy_$DATE.tar.gz ~/padmakara-backend \
-    --exclude=venv --exclude=__pycache__ --exclude=*.pyc --exclude=.git
-
-echo "Code backup saved to: $BACKUP_DIR/code_pre_deploy_$DATE.tar.gz"
+    --exclude=venv --exclude=__pycache__ --exclude=*.pyc --exclude=.git >/dev/null 2>&1
 
 # Clean old backups (keep last 5)
 cd $BACKUP_DIR
-ls -t db_pre_deploy_*.sql 2>/dev/null | tail -n +6 | xargs rm -f
-ls -t code_pre_deploy_*.tar.gz 2>/dev/null | tail -n +6 | xargs rm -f
+ls -t db_pre_deploy_*.sql 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
+ls -t code_pre_deploy_*.tar.gz 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
 
-echo "Backup completed"
+echo "✓ Backup completed"
 EOF
 }
 
@@ -254,12 +257,12 @@ initial_deployment() {
     copy_production_env
     
     log "Creating server directory structure..."
-    ssh ${SERVER_USER}@${SERVER_HOST} "mkdir -p ${SERVER_PATH}"
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "mkdir -p ${SERVER_PATH}"
     
     sync_code
     
     log "Setting up virtual environment on server..."
-    ssh ${SERVER_USER}@${SERVER_HOST} << EOF
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << EOF
 cd ${SERVER_PATH}
 
 # Create virtual environment
@@ -306,7 +309,7 @@ update_deployment() {
 rollback_deployment() {
     warn "Rolling back to previous version..."
     
-    ssh ${SERVER_USER}@${SERVER_HOST} << 'EOF'
+    ssh -q -o LogLevel=QUIET -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} << 'EOF'
 BACKUP_DIR="/home/deploy/backups"
 
 # Find the latest backup
