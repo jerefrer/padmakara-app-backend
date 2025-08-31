@@ -12,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.core.files.base import ContentFile
 from django.db import transaction, connection
+from django.utils import timezone
 from django.db import models
 from django.contrib.auth.decorators import login_required
 from rest_framework.decorators import api_view, permission_classes
@@ -820,6 +821,7 @@ def trigger_lambda_zip_generation(download_request):
         }
         
         logger.info(f"Triggering Lambda with {len(audio_files)} audio files for request {download_request.id}")
+        logger.info(f"Lambda payload: {json.dumps(payload)}")
         
         # Invoke Lambda function
         lambda_client = boto3.client(
@@ -893,7 +895,43 @@ def request_retreat_download(request, retreat_id):
                     'message': 'Download request already exists'
                 }, status=status.HTTP_200_OK)
         
-        # Check for existing shared ZIP that can be reused
+        # Clean up any stuck processing requests (older than 30 minutes)
+        stuck_requests = DownloadRequest.objects.filter(
+            retreat=retreat,
+            status='processing',
+            processing_started_at__lt=timezone.now() - timezone.timedelta(minutes=30)
+        )
+        
+        for stuck_request in stuck_requests:
+            stuck_request.mark_as_failed("Processing abandoned after 30 minutes")
+            logger.info(f"Cleaned up stuck request {stuck_request.id}")
+        
+        # Check if there's already a ZIP being generated for this retreat (global lock)
+        active_generation = DownloadRequest.objects.filter(
+            retreat=retreat,
+            status__in=['pending', 'processing']
+        ).first()
+        
+        if active_generation:
+            # Join the existing generation - create a request that waits for the same ZIP
+            new_request = DownloadRequest.objects.create(
+                user=user,
+                retreat=retreat,
+                status='processing',  # Will be updated when shared ZIP completes
+                processing_started_at=timezone.now()
+            )
+            
+            logger.info(f"Joining existing ZIP generation for retreat {retreat_id}, request {new_request.id} waiting for {active_generation.id}")
+            
+            return Response({
+                'request_id': new_request.id,
+                'status': 'processing',
+                'message': f'ZIP generation already in progress. Your request has been queued.',
+                'created_at': new_request.created_at.isoformat(),
+                'shared_with_request': active_generation.id
+            }, status=status.HTTP_201_CREATED)
+
+        # Check for existing shared ZIP that can be reused (but not currently being generated)
         existing_shared_zip = DownloadRequest.find_existing_shared_zip(retreat)
         
         if existing_shared_zip:
@@ -911,17 +949,18 @@ def request_retreat_download(request, retreat_id):
                 'download_count': existing_shared_zip.download_count + 1
             }, status=status.HTTP_201_CREATED)
         else:
-            # Create new shared ZIP request
+            # Create new shared ZIP request - this becomes the primary request that triggers Lambda
             download_request = DownloadRequest.create_shared_zip_request(user, retreat)
             
             # Trigger Lambda function for ZIP generation
             if not trigger_lambda_zip_generation(download_request):
+                download_request.mark_as_failed("Failed to start Lambda function")
                 return Response(
                     {'error': 'Failed to start ZIP generation'}, 
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
             
-            logger.info(f"Created new shared ZIP request {download_request.id} for retreat {retreat_id} by user {user.id}")
+            logger.info(f"Created new shared ZIP request {download_request.id} for retreat {retreat_id} by user {user.id} and triggered Lambda")
             
             return Response({
                 'request_id': download_request.id,
@@ -957,10 +996,17 @@ def download_request_status(request, request_id):
             user=user
         )
         
-        # Check if request has expired
+        # Check if request has expired or timed out
         if download_request.is_expired and download_request.status != 'expired':
             download_request.status = 'expired'
             download_request.save()
+        
+        # Check if processing has been running too long (30 minutes max)
+        if download_request.status == 'processing' and download_request.processing_started_at:
+            processing_duration = timezone.now() - download_request.processing_started_at
+            if processing_duration.total_seconds() > 1800:  # 30 minutes
+                download_request.mark_as_failed("Processing timed out after 30 minutes")
+                logger.warning(f"Download request {download_request.id} timed out after {processing_duration}")
         
         response_data = {
             'request_id': download_request.id,
@@ -987,6 +1033,20 @@ def download_request_status(request, request_id):
                 'time_until_expiry': download_request.time_until_expiry.total_seconds() if download_request.time_until_expiry else None
             })
         
+        # Add progress information if processing
+        if download_request.status == 'processing':
+            # Add fields if they exist in the model
+            progress_fields = {}
+            if hasattr(download_request, 'progress_percent') and download_request.progress_percent is not None:
+                progress_fields['progress_percent'] = download_request.progress_percent
+            if hasattr(download_request, 'processed_files') and download_request.processed_files is not None:
+                progress_fields['processed_files'] = download_request.processed_files
+            if hasattr(download_request, 'total_files') and download_request.total_files is not None:
+                progress_fields['total_files'] = download_request.total_files
+            
+            if progress_fields:
+                response_data.update(progress_fields)
+        
         # Add error information if failed
         if download_request.status == 'failed':
             response_data.update({
@@ -995,9 +1055,45 @@ def download_request_status(request, request_id):
                 'can_retry': download_request.can_retry()
             })
         
+        # Add performance metrics if available
+        if download_request.status == 'ready':
+            perf_fields = {}
+            if hasattr(download_request, 'processing_time_seconds') and download_request.processing_time_seconds:
+                perf_fields['processing_time_seconds'] = download_request.processing_time_seconds
+            if hasattr(download_request, 'compression_ratio') and download_request.compression_ratio is not None:
+                perf_fields['compression_ratio'] = download_request.compression_ratio
+            
+            if perf_fields:
+                response_data.update(perf_fields)
+        
         # Add processing duration if completed
         if download_request.processing_duration:
             response_data['processing_duration_seconds'] = download_request.processing_duration
+        
+        # Add enhanced progress information if available
+        if hasattr(download_request, 'progress_percent'):
+            response_data['progress_percent'] = download_request.progress_percent
+        
+        if hasattr(download_request, 'processed_files') and download_request.processed_files > 0:
+            response_data['processed_files'] = download_request.processed_files
+        
+        if hasattr(download_request, 'total_files') and download_request.total_files:
+            response_data['total_files'] = download_request.total_files
+        
+        # Add performance metrics if completed
+        if download_request.status == 'ready':
+            if hasattr(download_request, 'original_size') and download_request.original_size:
+                response_data['original_size'] = download_request.original_size
+                response_data['original_size_mb'] = round(download_request.original_size / (1024 * 1024), 2)
+            
+            if hasattr(download_request, 'compression_ratio') and download_request.compression_ratio is not None:
+                response_data['compression_ratio'] = download_request.compression_ratio
+            
+            if hasattr(download_request, 'processing_time_seconds') and download_request.processing_time_seconds:
+                response_data['processing_time_seconds'] = download_request.processing_time_seconds
+            
+            if hasattr(download_request, 'performance_metrics') and download_request.performance_metrics:
+                response_data['performance_metrics'] = download_request.performance_metrics
         
         return Response(response_data, status=status.HTTP_200_OK)
         
@@ -1041,44 +1137,27 @@ def download_file(request, request_id):
                 status=status.HTTP_410_GONE
             )
         
-        # Generate presigned URL for the ZIP file
-        try:
-            import boto3
-            from django.conf import settings
-            
-            s3_client = boto3.client(
-                's3',
-                aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
-                aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
-                region_name=settings.AWS_S3_REGION_NAME
-            )
-            
-            # Generate presigned URL for download (valid for 15 minutes)
-            presigned_url = s3_client.generate_presigned_url(
-                'get_object',
-                Params={
-                    'Bucket': settings.AWS_STORAGE_BUCKET_NAME,
-                    'Key': download_request.s3_key,
-                    'ResponseContentDisposition': f'attachment; filename="{download_request.retreat.name}.zip"'
-                },
-                ExpiresIn=900  # 15 minutes
-            )
-            
-            logger.info(f"Generated download URL for request {request_id} by user {user.id}")
-            
-            # Record download and extend lifecycle
-            download_request.record_download()
-            
-            # Return redirect to presigned URL or the URL itself
-            from django.http import HttpResponseRedirect
-            return HttpResponseRedirect(presigned_url)
-            
-        except Exception as s3_error:
-            logger.error(f"Error generating download URL: {str(s3_error)}")
+        # Use the presigned URL provided by Lambda function (already stored in download_url field)
+        if not download_request.download_url:
+            logger.error(f"No download URL available for request {request_id}")
             return Response(
-                {'error': 'Failed to generate download URL'}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'error': 'Download URL not available. Please try generating a new ZIP file.'},
+                status=status.HTTP_404_NOT_FOUND
             )
+        
+        logger.info(f"Returning Lambda-provided download URL for request {request_id} by user {user.id}")
+        
+        # Record download and extend lifecycle
+        download_request.record_download()
+        
+        # Return the presigned URL that Lambda already generated for the temp downloads bucket
+        return Response({
+            'success': True,
+            'download_url': download_request.download_url,  # Use Lambda-provided URL
+            'file_size': download_request.file_size,
+            'file_name': f"{download_request.retreat.name}.zip",
+            'expires_in_seconds': 172800  # 48 hours (Lambda URL expiration)
+        }, status=status.HTTP_200_OK)
         
     except Exception as e:
         logger.error(f"Error processing download request: {str(e)}")
@@ -1191,6 +1270,13 @@ def download_webhook(request):
             file_size = payload.get('file_size')
             lambda_request_id = payload.get('lambda_request_id')
             
+            # Extract performance metrics
+            original_size = payload.get('original_size')
+            compression_ratio = payload.get('compression_ratio')
+            processing_time = payload.get('processing_time_seconds')
+            files_processed = payload.get('files_processed')
+            performance_data = payload.get('performance')
+            
             if not all([download_url, s3_key, file_size]):
                 return JsonResponse(
                     {'error': 'Missing required fields for ready status'}, 
@@ -1201,28 +1287,109 @@ def download_webhook(request):
             download_request.update_shared_zip_info(s3_key, download_url, file_size)
             download_request.mark_as_ready(download_url, s3_key, file_size)
             
-            if lambda_request_id:
-                download_request.lambda_request_id = lambda_request_id
-                download_request.save(update_fields=['lambda_request_id'])
+            # Update all waiting requests for the same retreat
+            waiting_requests = DownloadRequest.objects.filter(
+                retreat=download_request.retreat,
+                status='processing'
+            ).exclude(id=download_request.id)
             
-            logger.info(f"Download request {request_id} marked as ready and shared ZIP updated")
+            for waiting_request in waiting_requests:
+                waiting_request.mark_as_ready(download_url, s3_key, file_size)
+                logger.info(f"Updated waiting request {waiting_request.id} with shared ZIP for retreat {download_request.retreat.id}")
+            
+            # Store performance metrics if fields exist
+            update_fields = ['lambda_request_id']
+            try:
+                if lambda_request_id:
+                    download_request.lambda_request_id = lambda_request_id
+                
+                if hasattr(download_request, 'original_size') and original_size:
+                    download_request.original_size = original_size
+                    update_fields.append('original_size')
+                
+                if hasattr(download_request, 'compression_ratio') and compression_ratio is not None:
+                    download_request.compression_ratio = compression_ratio
+                    update_fields.append('compression_ratio')
+                
+                if hasattr(download_request, 'processing_time_seconds') and processing_time:
+                    download_request.processing_time_seconds = processing_time
+                    update_fields.append('processing_time_seconds')
+                
+                if hasattr(download_request, 'processed_files') and files_processed:
+                    download_request.processed_files = files_processed
+                    update_fields.append('processed_files')
+                
+                if hasattr(download_request, 'progress_percent'):
+                    download_request.progress_percent = 100  # Complete
+                    update_fields.append('progress_percent')
+                
+                if hasattr(download_request, 'performance_metrics') and performance_data:
+                    download_request.performance_metrics = performance_data
+                    update_fields.append('performance_metrics')
+                
+                download_request.save(update_fields=update_fields)
+            except Exception as metrics_error:
+                logger.warning(f"Failed to store performance metrics: {str(metrics_error)}")
+                # Continue with basic save
+                if lambda_request_id:
+                    download_request.lambda_request_id = lambda_request_id
+                    download_request.save(update_fields=['lambda_request_id'])
+            
+            logger.info(f"Download request {request_id} marked as ready and shared ZIP updated - Performance: {processing_time}s, {compression_ratio}% compression")
             
         elif status_update == 'failed':
             error_message = payload.get('error_message', 'Unknown error')
             lambda_request_id = payload.get('lambda_request_id')
             
+            # Mark primary request as failed
             download_request.mark_as_failed(error_message)
             if lambda_request_id:
                 download_request.lambda_request_id = lambda_request_id
                 download_request.save(update_fields=['lambda_request_id'])
             
-            logger.error(f"Download request {request_id} failed: {error_message}")
+            # Mark all waiting requests for the same retreat as failed
+            waiting_requests = DownloadRequest.objects.filter(
+                retreat=download_request.retreat,
+                status__in=['pending', 'processing']
+            ).exclude(id=download_request.id)
+            
+            for request in waiting_requests:
+                request.mark_as_failed(f"Shared ZIP generation failed: {error_message}")
+                logger.info(f"Marked waiting request {request.id} as failed")
+            
+            logger.error(
+                f"ZIP generation failed for request {request_id}: {error_message}. "
+                f"Marked {len(waiting_requests) + 1} requests as failed."
+            )
             
         elif status_update == 'processing':
             lambda_request_id = payload.get('lambda_request_id')
+            
+            # Extract enhanced progress data
+            progress_percent = payload.get('progress_percent', 0)
+            processed_files = payload.get('processed_files', 0)
+            total_files = payload.get('total_files')
+            total_size_mb = payload.get('total_size_mb', 0)
+            
             download_request.mark_as_processing(lambda_request_id)
             
-            logger.info(f"Download request {request_id} marked as processing")
+            # Update progress fields if they exist
+            try:
+                if hasattr(download_request, 'progress_percent'):
+                    download_request.progress_percent = progress_percent
+                if hasattr(download_request, 'processed_files'):
+                    download_request.processed_files = processed_files
+                if hasattr(download_request, 'total_files') and total_files:
+                    download_request.total_files = total_files
+                
+                download_request.save(update_fields=[
+                    field for field in ['progress_percent', 'processed_files', 'total_files'] 
+                    if hasattr(download_request, field)
+                ])
+            except Exception as progress_error:
+                logger.warning(f"Failed to update progress fields: {str(progress_error)}")
+            
+            logger.info(f"Download request {request_id} marked as processing - Progress: {progress_percent}% ({processed_files}/{total_files or '?'} files)")
             
         else:
             return JsonResponse(
@@ -1243,3 +1410,38 @@ def download_webhook(request):
             {'error': 'Internal server error'}, 
             status=500
         )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def debug_download_requests(request):
+    """Debug endpoint to see all download requests for debugging"""
+    if not request.user.is_staff:
+        return Response({'error': 'Admin access required'}, status=403)
+    
+    requests = DownloadRequest.objects.all().order_by('-created_at')[:50]
+    debug_data = []
+    
+    for req in requests:
+        age_minutes = (timezone.now() - req.created_at).total_seconds() / 60
+        processing_time = None
+        if req.processing_started_at:
+            processing_time = (timezone.now() - req.processing_started_at).total_seconds() / 60
+        
+        debug_data.append({
+            'id': req.id,
+            'user': req.user.username,
+            'retreat': req.retreat.name,
+            'status': req.status,
+            'created_ago_minutes': round(age_minutes, 1),
+            'processing_time_minutes': round(processing_time, 1) if processing_time else None,
+            'error_message': req.error_message if req.status == 'failed' else None,
+            'shared_zip_key': req.shared_zip_key,
+            'lambda_request_id': getattr(req, 'lambda_request_id', None)
+        })
+    
+    return Response({
+        'total_requests': len(debug_data),
+        'active_processing': len([r for r in debug_data if r['status'] == 'processing']),
+        'requests': debug_data
+    })
