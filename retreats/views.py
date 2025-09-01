@@ -46,9 +46,11 @@ def check_s3_file_exists(s3_key, bucket_name=None):
     from botocore.exceptions import ClientError, NoCredentialsError
     from django.conf import settings
     
-    # Default to temp downloads bucket
+    # Default to configured temporary S3 bucket for ZIP downloads
     if not bucket_name:
-        bucket_name = 'padmakara-pt-temp-downloads'
+        bucket_name = getattr(settings, 'TEMP_S3_BUCKET', 'padmakara-pt-temp-downloads')
+    
+    logger.info(f"Checking S3 file: {s3_key} in bucket: {bucket_name}")
     
     try:
         # Create S3 client with explicit credentials
@@ -1247,11 +1249,64 @@ def download_file(request, request_id):
                 download_request.error_message = f"S3 file not accessible: {s3_validation['error']}"
                 download_request.save()
                 
-                # Check if we can auto-recover by creating a new download request
+                # Check if we can auto-recover by reusing existing valid shared ZIP first
                 try:
-                    logger.info(f"Auto-recovery: Creating fresh download request for retreat {download_request.retreat.id}")
+                    logger.info(f"Auto-recovery: Searching for existing valid shared ZIP for retreat {download_request.retreat.id}")
                     
-                    # Create new download request for same retreat
+                    # First try to find existing valid shared ZIP
+                    existing_shared_zip = DownloadRequest.find_existing_shared_zip(download_request.retreat)
+                    
+                    if existing_shared_zip:
+                        logger.info(f"Found existing shared ZIP request {existing_shared_zip.id} - validating S3 file")
+                        
+                        # Validate the existing ZIP's S3 file before reusing
+                        if existing_shared_zip.s3_key:
+                            existing_s3_validation = check_s3_file_exists(existing_shared_zip.s3_key)
+                            
+                            if existing_s3_validation['exists'] and existing_s3_validation['accessible']:
+                                # Reuse existing valid ZIP
+                                logger.info(f"Auto-recovery: Reusing existing valid ZIP {existing_shared_zip.s3_key}")
+                                new_download_request = DownloadRequest.create_shared_zip_request(user, download_request.retreat, existing_shared_zip)
+                                
+                                # Return success response with reused ZIP
+                                return Response({
+                                    'success': True,
+                                    'request_id': new_download_request.id,
+                                    'download_url': new_download_request.download_url,
+                                    'file_size': new_download_request.file_size,
+                                    'message': 'File recovered using existing valid ZIP.',
+                                    'reused_existing_zip': True,
+                                    'original_request_id': request_id
+                                }, status=status.HTTP_200_OK)
+                            else:
+                                # Existing ZIP is also invalid - mark as expired
+                                logger.warning(f"Existing shared ZIP {existing_shared_zip.id} also has invalid S3 file: {existing_s3_validation['error']}")
+                                existing_shared_zip.status = 'expired'
+                                existing_shared_zip.error_message = f"S3 file validation failed: {existing_s3_validation['error']}"
+                                existing_shared_zip.save()
+                        else:
+                            logger.warning(f"Existing shared ZIP {existing_shared_zip.id} has no S3 key")
+                    
+                    # No valid existing ZIP found - check if there's already an active generation in progress
+                    recent_processing = DownloadRequest.objects.filter(
+                        retreat=download_request.retreat,
+                        status__in=['pending', 'processing'],
+                        created_at__gte=timezone.now() - timezone.timedelta(minutes=10)
+                    ).first()
+                    
+                    if recent_processing:
+                        logger.info(f"Auto-recovery: Found recent processing request {recent_processing.id} - waiting instead of creating new")
+                        return Response({
+                            'success': False,
+                            'waiting_for_existing': True,
+                            'existing_request_id': recent_processing.id,
+                            'message': 'A fresh ZIP is already being generated. Please check again in 30-60 seconds.',
+                            'original_request_id': request_id,
+                            'estimated_time': '30-60 seconds'
+                        }, status=status.HTTP_202_ACCEPTED)
+                    
+                    # No valid existing ZIP found - create new one
+                    logger.info(f"Auto-recovery: No valid existing ZIP found, creating fresh download request for retreat {download_request.retreat.id}")
                     new_download_request = DownloadRequest.create_shared_zip_request(user, download_request.retreat)
                     
                     # Trigger Lambda function for fresh ZIP generation
