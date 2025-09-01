@@ -248,8 +248,16 @@ if DEBUG:
     # Use custom browser backend for development - opens emails in browser
     EMAIL_BACKEND = 'utils.email_backends.BrowserEmailBackend'
 else:
-    EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
-if not DEBUG:
+    # Production: Use Amazon SES by default, with fallback to SMTP
+    EMAIL_BACKEND = config('EMAIL_BACKEND', default='utils.ses_backends.SESEmailBackend')
+    
+    # Amazon SES Configuration
+    AWS_SES_ACCESS_KEY_ID = config('AWS_SES_ACCESS_KEY_ID', default='')
+    AWS_SES_SECRET_ACCESS_KEY = config('AWS_SES_SECRET_ACCESS_KEY', default='')
+    AWS_SES_REGION_NAME = config('AWS_SES_REGION_NAME', default='us-east-1')
+    AWS_SES_CONFIGURATION_SET = config('AWS_SES_CONFIGURATION_SET', default='')
+    
+    # SMTP Fallback Configuration (if using SMTP backend)
     EMAIL_HOST = config('EMAIL_HOST', default='')
     EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
     EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)

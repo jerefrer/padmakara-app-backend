@@ -18,7 +18,6 @@ from .serializers import (
     MagicLinkActivationSerializer,
     DeviceActivationSerializer
 )
-from padmakara.assets import LOGO_BASE64
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -458,7 +457,7 @@ def send_magic_link_email(user, magic_link, device_name, language='en'):
             'magic_link': magic_link,
             'device_name': device_name,
             'site_name': settings.SITE_NAME,
-            'logo_base64': LOGO_BASE64
+            'backend_url': settings.BACKEND_URL
         })
         
         plain_message = render_to_string(txt_template, {
