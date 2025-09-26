@@ -20,6 +20,10 @@ urlpatterns = [
     path('sessions/<int:session_id>/', views.session_details, name='session_details'),
     path('presigned-url/<int:track_id>/', views.track_presigned_url, name='track_presigned_url'),
     
+    # Language preference endpoints
+    path('user-language-preferences/', views.user_language_preferences, name='user_language_preferences'),
+    path('sessions/<int:session_id>/clear-language-preference/', views.clear_session_language_preference, name='clear_session_language_preference'),
+    
     # Download ZIP endpoints
     path('<int:retreat_id>/request-download/', views.request_retreat_download, name='request_retreat_download'),
     path('download-requests/<int:request_id>/status/', views.download_request_status, name='download_request_status'),

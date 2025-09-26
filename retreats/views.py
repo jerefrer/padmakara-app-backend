@@ -20,6 +20,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from .models import Session, Track, Retreat, RetreatGroup, RetreatParticipation, DownloadRequest
+from .services import UserLanguageService
 from utils.track_parser import parse_track_filename, validate_audio_file, get_file_size_mb
 
 # Set up logging
@@ -311,19 +312,29 @@ def complete_s3_upload(request, session_id):
                 with transaction.atomic():
                     locked_session = Session.objects.select_for_update().get(id=session_id)
                     
-                    # Check if track number already exists
-                    existing_track = locked_session.tracks.filter(track_number=track_info['track_number']).first()
-                    if existing_track:
-                        max_track = locked_session.tracks.aggregate(max_num=models.Max('track_number'))['max_num'] or 0
-                        track_info['track_number'] = max_track + 1
-                        logger.info(f"Track number conflict resolved, using: {track_info['track_number']}")
+                    # Enhanced language detection from filename using improved parser
+                    from utils.track_parser import parse_track_filename
+                    parsed_info = parse_track_filename(track_info.get('original_filename', ''))
                     
-                    # Determine language
-                    language = 'en'
-                    if locked_session.retreat.groups.exists():
+                    # Determine language from filename first, then fall back to group
+                    language = parsed_info.get('language_code', 'en')
+                    if language == 'en' and locked_session.retreat.groups.exists():
                         first_group = locked_session.retreat.groups.first().name.lower()
                         if first_group.startswith('pt') or 'portuguese' in first_group or 'português' in first_group:
                             language = 'pt'
+                    
+                    # Language-aware conflict resolution: check for existing track with same number AND language
+                    existing_track = locked_session.tracks.filter(
+                        track_number=track_info['track_number'], 
+                        language=language
+                    ).first()
+                    if existing_track:
+                        # Only increment if same track number AND language already exists
+                        max_track = locked_session.tracks.aggregate(max_num=models.Max('track_number'))['max_num'] or 0
+                        track_info['track_number'] = max_track + 1
+                        logger.info(f"Track number conflict resolved for language {language}, using: {track_info['track_number']}")
+                    else:
+                        logger.info(f"Track #{track_info['track_number']} available for language {language}")
                     
                     # Create track with S3 file reference and client-computed duration
                     from utils.storage import RetreatMediaStorage
@@ -428,20 +439,25 @@ def upload_track_file(request, session_id):
                     # Use select_for_update to lock the session during track number assignment
                     locked_session = Session.objects.select_for_update().get(id=session_id)
                     
-                    # Check if track number already exists
-                    existing_track = locked_session.tracks.filter(track_number=track_info['track_number']).first()
-                    if existing_track:
-                        # Find next available track number
-                        max_track = locked_session.tracks.aggregate(max_num=models.Max('track_number'))['max_num'] or 0
-                        track_info['track_number'] = max_track + 1
-                        logger.info(f"Track number conflict resolved, using: {track_info['track_number']}")
-                    
-                    # Determine language
-                    language = 'en'  # default
-                    if locked_session.retreat.groups.exists():
+                    # Enhanced language detection from filename
+                    language = track_info.get('language_code', 'en')  # Use parsed language from track_info
+                    if language == 'en' and locked_session.retreat.groups.exists():
                         first_group = locked_session.retreat.groups.first().name.lower()
                         if first_group.startswith('pt') or 'portuguese' in first_group or 'português' in first_group:
                             language = 'pt'
+                    
+                    # Language-aware conflict resolution: check for existing track with same number AND language
+                    existing_track = locked_session.tracks.filter(
+                        track_number=track_info['track_number'], 
+                        language=language
+                    ).first()
+                    if existing_track:
+                        # Only increment if same track number AND language already exists
+                        max_track = locked_session.tracks.aggregate(max_num=models.Max('track_number'))['max_num'] or 0
+                        track_info['track_number'] = max_track + 1
+                        logger.info(f"Track number conflict resolved for language {language}, using: {track_info['track_number']}")
+                    else:
+                        logger.info(f"Track #{track_info['track_number']} available for language {language}")
                     
                     logger.info(f"Creating track with S3 upload - Track #{track_info['track_number']}: {track_info['title']}")
                     
@@ -726,11 +742,12 @@ def retreat_details(request, retreat_id):
         )
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def session_details(request, session_id):
     """
-    Get detailed information about a specific session including all tracks
+    GET: Get detailed information about a specific session including tracks filtered by user's language preference
+    POST: Set language preference for this retreat
     """
     try:
         user = request.user
@@ -747,9 +764,18 @@ def session_details(request, session_id):
             id=session_id
         )
         
+        # Note: Session language preferences now handled client-side using AsyncStorage
+        
+        # GET request - return session details with ALL tracks (frontend handles language filtering)
+        # Content language is now fully client-side, no default from backend
+        
+        # Get ALL tracks for the session (no server-side filtering)
+        # Order: track_number ASC, then originals before translations (is_original DESC = True first, then False)
+        all_tracks = session.tracks.all().order_by('track_number', '-is_original')
+        
         # Build tracks data
         tracks_data = []
-        for track in session.tracks.all().order_by('track_number'):
+        for track in all_tracks:
             # Use a default duration if none is set (approximately 30 minutes)
             duration_seconds = track.duration_minutes * 60 if track.duration_minutes > 0 else 1800
             tracks_data.append({
@@ -758,8 +784,13 @@ def session_details(request, session_id):
                 'duration': duration_seconds,  # Convert to seconds
                 'audioUrl': '',  # Will be provided via presigned URLs
                 'transcriptUrl': '',  # Will be provided via presigned URLs
-                'order': track.track_number
+                'order': track.track_number,
+                'language': track.language,
+                'isOriginal': track.is_original
             })
+        
+        # Get available languages for this retreat
+        available_languages = UserLanguageService.get_available_languages_for_retreat(session.retreat)
         
         response_data = {
             'id': str(session.id),
@@ -770,7 +801,9 @@ def session_details(request, session_id):
             'gathering': {
                 'id': str(session.retreat.id),
                 'name': session.retreat.name
-            }
+            },
+
+            'availableLanguages': available_languages
         }
         
         logger.info(f"Retrieved session details for session {session_id} for user {user.id}")
@@ -780,6 +813,68 @@ def session_details(request, session_id):
         logger.error(f"Error retrieving session details: {str(e)}")
         return Response(
             {'error': 'Failed to retrieve session details'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def user_language_preferences(request):
+    """
+    GET: Get user's language preferences summary (app language + session overrides)
+    POST: Set user's app language preference (for login/UI)
+    """
+    try:
+        user = request.user
+        
+        if request.method == 'POST':
+            app_language = request.data.get('appLanguage')
+            
+            if app_language:
+                UserLanguageService.set_user_app_language(user, app_language)
+                logger.info(f"Updated app language preference for user {user.id} to {app_language}")
+                return Response({'success': True}, status=status.HTTP_200_OK)
+            else:
+                return Response(
+                    {'error': 'appLanguage parameter is required'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        # GET request - return user's language preferences summary
+        preferences_summary = UserLanguageService.get_user_language_preferences_summary(user)
+        return Response(preferences_summary, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error managing user language preferences: {str(e)}")
+        return Response(
+            {'error': 'Failed to manage language preferences'}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def clear_session_language_preference(request, session_id):
+    """
+    Clear user's language preference for a specific session
+    """
+    try:
+        user = request.user
+        session = get_object_or_404(Session, id=session_id)
+        
+        # Session language preferences now handled client-side
+        cleared = False  # No server-side session preferences to clear
+        
+        if cleared:
+            logger.info(f"Cleared language preference for user {user.id} and session {session_id}")
+            return Response({'success': True, 'cleared': True}, status=status.HTTP_200_OK)
+        else:
+            return Response({'success': True, 'cleared': False}, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error clearing session language preference: {str(e)}")
+        return Response(
+            {'error': 'Failed to clear language preference'}, 
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
 

@@ -381,6 +381,7 @@ class Track(models.Model):
     
     # Content
     language = models.CharField(_('Language'), max_length=5, choices=LANGUAGE_CHOICES, default='en')
+    is_original = models.BooleanField(_('Is Original'), default=True, help_text=_('False for translation tracks (auto-detected from filename)'))
     
     # Files
     audio_file = models.FileField(_('Audio File'), upload_to=retreat_audio_upload_path, storage=RetreatMediaStorage(), max_length=500, null=True, blank=True)
@@ -400,11 +401,58 @@ class Track(models.Model):
     class Meta:
         verbose_name = _('Track')
         verbose_name_plural = _('Tracks')
-        ordering = ['session', 'track_number']
-        unique_together = ['session', 'track_number']
+        ordering = ['session', 'track_number', 'is_original', 'language']
+        unique_together = ['session', 'track_number', 'language']
 
     def __str__(self):
         return f"{self.session.title} - Track {self.track_number}: {self.title}"
+    
+    def save(self, *args, **kwargs):
+        """Auto-detect translation tracks from filename and extract track number using enhanced parser"""
+        if self.audio_file:
+            # Use enhanced track parser for comprehensive filename analysis
+            from utils.track_parser import parse_track_filename
+            filename = self.audio_file.name
+            parsed_info = parse_track_filename(filename)
+            
+            # Auto-detect language and translation status from filename
+            if not self.language:
+                self.language = parsed_info.get('language_code', 'en')
+            
+            # Set is_original based on parsed translation status
+            self.is_original = not parsed_info.get('is_translation', False)
+                    
+            # Extract track number from filename if not already set
+            if not self.track_number or self.track_number == 1:
+                parsed_track_number = parsed_info.get('track_number')
+                if parsed_track_number:
+                    self.track_number = parsed_track_number
+                    
+            # Extract clean title from filename if not already set or if default
+            if not self.title or self.title == 'Untitled':
+                parsed_title = parsed_info.get('title')
+                self.title = parsed_title if parsed_title else self._extract_title_from_filename(filename)
+        
+        super().save(*args, **kwargs)
+    
+    def _extract_title_from_filename(self, filename):
+        """Extract clean title from filename"""
+        import re
+        import os
+        
+        # Remove file extension
+        title = os.path.splitext(os.path.basename(filename))[0]
+        
+        # Remove track number prefix (001, 002, etc.)
+        title = re.sub(r'^\d{3}[\s_-]*', '', title)
+        
+        # Remove speaker prefixes (JKR, TRAD, etc.) followed by dash/space
+        title = re.sub(r'^[A-Z]+[\s_-]+', '', title)
+        
+        # Clean up extra spaces and separators
+        title = re.sub(r'[\s_-]+', ' ', title).strip()
+        
+        return title if title else 'Untitled'
 
     @property
     def audio_file_url(self):
@@ -1001,3 +1049,35 @@ def retreat_post_delete_handler(sender, instance, **kwargs):
                         
     except Exception as e:
         logger.error(f"Error cleaning up S3 files for retreat (bulk operation): {str(e)}")
+
+
+# Language Preference Models
+
+class UserLanguagePreference(models.Model):
+    """
+    User's app language preference set during registration - syncs across all devices
+    """
+    user = models.OneToOneField(
+        User, 
+        on_delete=models.CASCADE, 
+        related_name='language_preference'
+    )
+    app_language = models.CharField(
+        _('App Language'),
+        max_length=5, 
+        choices=[('en', 'English'), ('pt', 'Português')],
+        default='en',
+        help_text=_('UI language preference set during registration based on frontend language')
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('User Language Preference')
+        verbose_name_plural = _('User Language Preferences')
+
+    def __str__(self):
+        return f"{self.user.username}: UI={self.app_language}"
+
+
+# Note: UserSessionLanguagePreference removed - session language preferences now handled client-side using AsyncStorage
